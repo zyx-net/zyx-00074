@@ -1,0 +1,17 @@
+{
+  "projectName": "生态保护与可持续发展采访",
+  "interviewee": "张教授",
+  "interviewer": "记者",
+  "interviewDate": "2024-01-15",
+  "location": "北京",
+  "separator": "---",
+  "speakerPattern": "【(.*?)】:",
+  "timestampPattern": "",
+  "defaultTags": ["生态保护", "可持续发展", "采访"],
+  "sensitiveWords": ["敏感话题", "损害", "矛盾"],
+  "requiredReferences": [
+    "《环境保护法》",
+    "《乡村振兴战略规划》",
+    "《可持续发展议程》"
+  ]
+}

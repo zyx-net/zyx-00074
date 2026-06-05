@@ -1,0 +1,231 @@
+"use strict";
+const electron = require("electron");
+const fs = require("fs");
+const path = require("path");
+function _interopNamespaceDefault(e) {
+  const n = Object.create(null, { [Symbol.toStringTag]: { value: "Module" } });
+  if (e) {
+    for (const k in e) {
+      if (k !== "default") {
+        const d = Object.getOwnPropertyDescriptor(e, k);
+        Object.defineProperty(n, k, d.get ? d : {
+          enumerable: true,
+          get: () => e[k]
+        });
+      }
+    }
+  }
+  n.default = e;
+  return Object.freeze(n);
+}
+const fs__namespace = /* @__PURE__ */ _interopNamespaceDefault(fs);
+const path__namespace = /* @__PURE__ */ _interopNamespaceDefault(path);
+const isDev = !electron.app.isPackaged;
+let mainWindow = null;
+const getWorkspaceDir = () => {
+  const userDataPath = electron.app.getPath("userData");
+  const workspaceDir = path__namespace.join(userDataPath, "workspaces");
+  if (!fs__namespace.existsSync(workspaceDir)) {
+    fs__namespace.mkdirSync(workspaceDir, { recursive: true });
+  }
+  return workspaceDir;
+};
+const getAutoSavePath = () => {
+  return path__namespace.join(getWorkspaceDir(), "autosave.json");
+};
+const getBackupPath = () => {
+  return path__namespace.join(getWorkspaceDir(), "backup.json");
+};
+const createWindow = () => {
+  mainWindow = new electron.BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 960,
+    minHeight: 600,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path__namespace.join(__dirname, "preload.js")
+    }
+  });
+  if (isDev) {
+    mainWindow.loadURL("http://localhost:5173");
+    mainWindow.webContents.openDevTools();
+  } else {
+    mainWindow.loadFile(path__namespace.join(__dirname, "../dist/index.html"));
+  }
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    electron.shell.openExternal(url);
+    return { action: "deny" };
+  });
+};
+electron.app.whenReady().then(() => {
+  createWindow();
+  electron.app.on("activate", () => {
+    if (electron.BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+electron.app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    electron.app.quit();
+  }
+});
+electron.ipcMain.handle("file:read-text", async (_event, filePath) => {
+  try {
+    const content = fs__namespace.readFileSync(filePath, "utf-8");
+    return { success: true, content };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("file:write-text", async (_event, filePath, content) => {
+  try {
+    const dir = path__namespace.dirname(filePath);
+    if (!fs__namespace.existsSync(dir)) {
+      fs__namespace.mkdirSync(dir, { recursive: true });
+    }
+    fs__namespace.writeFileSync(filePath, content, "utf-8");
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("dialog:open-file", async (_event, filters) => {
+  if (!mainWindow) return { canceled: true, filePaths: [] };
+  const result = await electron.dialog.showOpenDialog(mainWindow, {
+    properties: ["openFile"],
+    filters: filters || [
+      { name: "文本文件", extensions: ["txt", "md", "json"] },
+      { name: "所有文件", extensions: ["*"] }
+    ]
+  });
+  return result;
+});
+electron.ipcMain.handle("dialog:save-file", async (_event, defaultName, filters) => {
+  if (!mainWindow) return { canceled: true, filePath: "" };
+  const result = await electron.dialog.showSaveDialog(mainWindow, {
+    defaultPath: defaultName || "untitled",
+    filters: filters || [
+      { name: "所有文件", extensions: ["*"] }
+    ]
+  });
+  return result;
+});
+electron.ipcMain.handle("workspace:autosave", async (_event, data) => {
+  try {
+    const savePath = getAutoSavePath();
+    const backupPath = getBackupPath();
+    if (fs__namespace.existsSync(savePath)) {
+      const currentContent = fs__namespace.readFileSync(savePath, "utf-8");
+      fs__namespace.writeFileSync(backupPath, currentContent, "utf-8");
+    }
+    fs__namespace.writeFileSync(savePath, data, "utf-8");
+    return { success: true, path: savePath };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("workspace:load-autosave", async () => {
+  try {
+    const savePath = getAutoSavePath();
+    if (fs__namespace.existsSync(savePath)) {
+      const content = fs__namespace.readFileSync(savePath, "utf-8");
+      return { success: true, content, hasBackup: fs__namespace.existsSync(getBackupPath()) };
+    }
+    return { success: false, content: null, hasBackup: false };
+  } catch (error) {
+    return { success: false, error: error.message, hasBackup: fs__namespace.existsSync(getBackupPath()) };
+  }
+});
+electron.ipcMain.handle("workspace:load-backup", async () => {
+  try {
+    const backupPath = getBackupPath();
+    if (fs__namespace.existsSync(backupPath)) {
+      const content = fs__namespace.readFileSync(backupPath, "utf-8");
+      return { success: true, content };
+    }
+    return { success: false, content: null };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("workspace:save-as", async (_event, data) => {
+  if (!mainWindow) return { canceled: true };
+  const result = await electron.dialog.showSaveDialog(mainWindow, {
+    defaultPath: "workspace.json",
+    filters: [
+      { name: "工作区文件", extensions: ["json"] },
+      { name: "所有文件", extensions: ["*"] }
+    ]
+  });
+  if (result.canceled || !result.filePath) {
+    return { canceled: true };
+  }
+  try {
+    fs__namespace.writeFileSync(result.filePath, data, "utf-8");
+    return { success: true, path: result.filePath };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("workspace:load", async (_event, filePath) => {
+  if (filePath) {
+    try {
+      const content = fs__namespace.readFileSync(filePath, "utf-8");
+      return { success: true, content, path: filePath };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+  if (!mainWindow) return { canceled: true };
+  const result = await electron.dialog.showOpenDialog(mainWindow, {
+    properties: ["openFile"],
+    filters: [
+      { name: "工作区文件", extensions: ["json"] },
+      { name: "所有文件", extensions: ["*"] }
+    ]
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true };
+  }
+  try {
+    const content = fs__namespace.readFileSync(result.filePaths[0], "utf-8");
+    return { success: true, content, path: result.filePaths[0] };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("export:save", async (_event, fileName, content, filters) => {
+  if (!mainWindow) return { canceled: true };
+  const result = await electron.dialog.showSaveDialog(mainWindow, {
+    defaultPath: fileName,
+    filters: filters || [
+      { name: "所有文件", extensions: ["*"] }
+    ]
+  });
+  if (result.canceled || !result.filePath) {
+    return { canceled: true };
+  }
+  try {
+    fs__namespace.writeFileSync(result.filePath, content, "utf-8");
+    return { success: true, path: result.filePath };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+electron.ipcMain.handle("app:get-version", () => {
+  return electron.app.getVersion();
+});
+electron.ipcMain.handle("app:get-paths", () => {
+  return {
+    userData: electron.app.getPath("userData"),
+    workspace: getWorkspaceDir(),
+    autosave: getAutoSavePath(),
+    backup: getBackupPath()
+  };
+});

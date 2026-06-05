@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "workspace": {
+    "clips": [
+      {
+        "id": "clip-1",
+        "content": "这是一个损坏的工作区文件示例",
+        "status": "available"
+      }
+    ],
+    "tags": ["损坏的标签"]
+  },
+  "history": {
+    "entries": [
+      {
+        "id": "hist-1",
+        "type": "import",
+        "description": "导入测试数据",
+        "timestamp": 1700000000000,
+        "stateBefore": null,
+        "stateAfter": null
+      }
+    ],
+    "currentIndex": 0
+  },
+  "this_field_is_malformed": ,,,
+  "missing_bracket": true
+}

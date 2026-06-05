@@ -1,0 +1,488 @@
+import { describe, it, expect, beforeEach } from 'vitest'
+import * as Parser from '../parser'
+import * as State from '../state'
+import * as History from '../history'
+import * as Checker from '../checker'
+import * as Exporter from '../exporter'
+import type { WorkspaceState, MaterialConfig, HistoryEntry } from '../types'
+
+const sampleTranscript = `【记者】: 张教授您好，非常感谢您接受我们的采访。首先想请您谈谈这次项目的背景和初衷。
+
+【张教授】: 谢谢你们的邀请。这个项目其实源于三年前一次偶然的实地考察，我们在西南某山区调研时发现，当地的生态环境保护和经济发展之间存在很大的矛盾。
+
+【记者】: 能具体谈谈是什么样的矛盾吗？
+
+【张教授】: 当地有丰富的矿产资源，如果开采的话能快速带动经济，但同时也会破坏当地的生态环境，影响下游的饮用水安全。而且那个地方还有一些历史文物遗迹，开采可能会对它们造成损害。
+---
+【记者】: 那你们团队是如何着手解决这个问题的？
+
+【张教授】: 我们花了两年多的时间，走访了十几个村落，收集了大量的一手数据。同时也参考了国内外很多类似的案例，比如北欧的可持续发展模式。
+
+【记者】: 在调研过程中有没有遇到什么困难？
+
+【张教授】: 困难当然很多，最大的问题是当地村民的不理解。他们觉得我们是来阻止他们致富的，一开始对我们非常排斥。后来我们通过举办科普讲座、组织村民到其他成功案例地区参观，慢慢才获得了他们的信任。
+
+【记者】: 那这个敏感话题你们是如何处理的？
+
+【张教授】: 这确实是个难点。我们的原则是既要尊重当地村民的发展诉求，也要守住生态保护的底线。我们提出了一个"生态补偿+产业转型"的方案，由政府和企业共同出资建立生态补偿基金，同时帮助当地发展生态旅游和特色农业。
+
+---
+---
+---
+
+【记者】: 这个方案现在实施的效果如何？
+
+【张教授】: 从目前的数据来看，效果还是不错的。村民的收入平均增长了30%左右，同时当地的森林覆盖率也提高了15个百分点。更重要的是，村民的生态保护意识明显增强了。
+
+【记者】: 对于其他面临类似问题的地区，您有什么建议？
+
+【张教授】: 我觉得最重要的是要因地制宜，不能照搬别人的经验。每个地方的情况都不一样，必须深入了解当地的实际情况，充分听取当地群众的意见。另外，政府的引导和支持也非常关键。
+
+【记者】: 好的，再次感谢张教授接受我们的采访。希望你们的项目能够取得更大的成功。
+
+【张教授】: 谢谢，也希望通过你们的报道，能让更多人关注生态保护和可持续发展的问题。`
+
+const sampleConfig: MaterialConfig = {
+  separator: '---',
+  speakerPattern: '【(.*?)】:',
+  timestampPattern: '',
+  defaultTags: ['生态保护', '可持续发展', '采访'],
+  sensitiveWords: ['敏感话题', '损害', '矛盾'],
+  requiredReferencePatterns: [
+    '《环境保护法》',
+    '《乡村振兴战略规划》',
+    '《可持续发展议程》'
+  ]
+}
+
+const createHistoryEntry = (
+  type: HistoryEntry['type'],
+  before: Partial<WorkspaceState>,
+  after: Partial<WorkspaceState>,
+  description: string
+): HistoryEntry => ({
+  type,
+  timestamp: Date.now(),
+  before,
+  after,
+  description
+})
+
+describe('验收主链路测试', () => {
+  let workspace: WorkspaceState
+  let historyState: History.HistoryState
+
+  beforeEach(() => {
+    workspace = State.createInitialState()
+    historyState = History.createInitialHistory()
+  })
+
+  it('1. 导入：解析转写文本和素材配置，正确切分片段', () => {
+    const result = Parser.parseTranscript(sampleTranscript, sampleConfig)
+    
+    expect(result.clips.length).toBeGreaterThan(0)
+    expect(result.warnings.length).toBe(0)
+    
+    const merged = Parser.mergeParseResult(
+      workspace.clips,
+      workspace.tags,
+      result.clips,
+      result.tags
+    )
+    
+    workspace = {
+      ...workspace,
+      clips: merged.clips,
+      tags: merged.tags,
+      config: { ...workspace.config, ...sampleConfig }
+    }
+    
+    expect(workspace.clips.length).toBe(3)
+    expect(workspace.tags.length).toBe(3)
+    
+    workspace.clips.forEach(clip => {
+      expect(clip.content.trim().length).toBeGreaterThan(0)
+      expect(clip.status).toBe('available')
+      expect(clip.tags).toEqual(expect.arrayContaining(['生态保护', '可持续发展', '采访']))
+    })
+  })
+
+  it('2. 标记：修改片段状态为可用、待核实、禁用、已发布', () => {
+    const parseResult = Parser.parseTranscript(sampleTranscript, sampleConfig)
+    const merged = Parser.mergeParseResult(
+      [], [], parseResult.clips, parseResult.tags
+    )
+    workspace = { ...workspace, clips: merged.clips, tags: merged.tags }
+    
+    const clip1 = workspace.clips[0]
+    const clip2 = workspace.clips[1]
+    const clip3 = workspace.clips[2]
+    
+    const result1 = State.setClipStatus(workspace, clip1.id, 'pending')
+    expect(result1.changed).toBe(true)
+    workspace = result1.state
+    
+    const result2 = State.setClipStatus(workspace, clip2.id, 'disabled')
+    expect(result2.changed).toBe(true)
+    workspace = result2.state
+    
+    const result3 = State.setClipStatus(workspace, clip3.id, 'pending')
+    expect(result3.changed).toBe(true)
+    workspace = result3.state
+    
+    expect(workspace.clips[0].status).toBe('pending')
+    expect(workspace.clips[1].status).toBe('disabled')
+    expect(workspace.clips[2].status).toBe('pending')
+  })
+
+  it('3. 撤销：修改状态后可以撤销操作', () => {
+    const parseResult = Parser.parseTranscript(sampleTranscript, sampleConfig)
+    const merged = Parser.mergeParseResult([], [], parseResult.clips, parseResult.tags)
+    workspace = { ...workspace, clips: merged.clips, tags: merged.tags }
+    
+    const importEntry = createHistoryEntry(
+      'import',
+      { clips: [], tags: [] },
+      { clips: workspace.clips, tags: workspace.tags },
+      `导入 ${parseResult.clips.length} 个片段`
+    )
+    historyState = History.pushHistory(historyState, importEntry)
+    
+    const clip1 = workspace.clips[0]
+    const oldStatus = clip1.status
+    const stateBefore = JSON.parse(JSON.stringify(workspace))
+    
+    const statusResult = State.setClipStatus(workspace, clip1.id, 'pending')
+    workspace = statusResult.state
+    
+    const statusEntry = createHistoryEntry(
+      'status_change',
+      { clips: stateBefore.clips },
+      { clips: workspace.clips },
+      `片段状态变更为待核实`
+    )
+    historyState = History.pushHistory(historyState, statusEntry)
+    
+    expect(workspace.clips[0].status).toBe('pending')
+    
+    const undoResult = History.undo(historyState, workspace)
+    expect(undoResult.entry).toBeDefined()
+    workspace = undoResult.state
+    historyState = undoResult.history
+    
+    expect(workspace.clips[0].status).toBe(oldStatus)
+  })
+
+  it('4. 检查：检测敏感词和缺引用项', () => {
+    const parseResult = Parser.parseTranscript(sampleTranscript, sampleConfig)
+    const merged = Parser.mergeParseResult([], [], parseResult.clips, parseResult.tags)
+    workspace = {
+      ...workspace,
+      clips: merged.clips,
+      tags: merged.tags,
+      config: sampleConfig
+    }
+    
+    const result = Checker.checkAllClips(workspace)
+    expect(result.results.length).toBeGreaterThan(0)
+    
+    const hasSensitiveWord = result.results.some(r => r.type === 'sensitive_word')
+    const hasMissingRef = result.results.some(r => r.type === 'missing_reference')
+    
+    expect(hasSensitiveWord).toBe(true)
+    expect(hasMissingRef).toBe(true)
+    
+    expect(result.summary.errorCount).toBeGreaterThan(0)
+    expect(result.summary.clipsWithIssues.length).toBeGreaterThan(0)
+  })
+
+  it('5. 导出：导出 Markdown 和 JSON 格式的发布包', () => {
+    const parseResult = Parser.parseTranscript(sampleTranscript, sampleConfig)
+    const merged = Parser.mergeParseResult([], [], parseResult.clips, parseResult.tags)
+    workspace = { ...workspace, clips: merged.clips, tags: merged.tags }
+    
+    const mdResult = Exporter.exportClips(workspace, {
+      format: 'markdown',
+      includeStatus: ['available', 'published']
+    })
+    
+    expect(mdResult.fileName.endsWith('.md')).toBe(true)
+    expect(mdResult.content).toContain('# 采访素材发布包')
+    expect(mdResult.content).toContain('## 片段 1')
+    expect(mdResult.content).toContain('**状态**：')
+    expect(mdResult.content).toContain('**标签**：')
+    
+    const jsonResult = Exporter.exportClips(workspace, {
+      format: 'json',
+      includeStatus: ['available', 'published']
+    })
+    
+    expect(jsonResult.fileName.endsWith('.json')).toBe(true)
+    const parsed = JSON.parse(jsonResult.content)
+    expect(parsed.meta).toBeDefined()
+    expect(parsed.clips).toBeDefined()
+    expect(parsed.clips.length).toBe(workspace.clips.filter(c => c.status === 'available' || c.status === 'published').length)
+  })
+})
+
+describe('失败路径测试', () => {
+  let workspace: WorkspaceState
+
+  beforeEach(() => {
+    workspace = State.createInitialState()
+  })
+
+  it('1. 连续空分隔符不生成空片段', () => {
+    const transcriptWithEmptySeparators = `【记者】: 第一段内容
+
+【张教授】: 第一段回复
+---
+---
+---
+【记者】: 第二段内容
+
+【张教授】: 第二段回复`
+    
+    const result = Parser.parseTranscript(transcriptWithEmptySeparators, sampleConfig)
+    
+    expect(result.clips.length).toBe(2)
+    result.clips.forEach(clip => {
+      expect(clip.content.trim().length).toBeGreaterThan(0)
+    })
+  })
+
+  it('2. 大小写重复标签被处理', () => {
+    const parseResult = Parser.parseTranscript(sampleTranscript, sampleConfig)
+    const merged = Parser.mergeParseResult([], [], parseResult.clips, [])
+    workspace = { ...workspace, clips: merged.clips, tags: merged.tags }
+    
+    const clip = workspace.clips[0]
+    
+    const result1 = State.addTagToClip(workspace, clip.id, '重要')
+    workspace = result1.state
+    
+    const result2 = State.addTagToClip(workspace, clip.id, '重要')
+    expect(result2.changed).toBe(false)
+    
+    const result3 = State.addTagToClip(workspace, clip.id, '重要')
+    expect(result3.changed).toBe(false)
+    
+    const clipAfter = workspace.clips.find(c => c.id === clip.id)!
+    expect(clipAfter.tags.filter(t => t.toLowerCase() === '重要').length).toBe(1)
+  })
+
+  it('3. 待核实片段禁止发布', () => {
+    const parseResult = Parser.parseTranscript(sampleTranscript, sampleConfig)
+    const merged = Parser.mergeParseResult([], [], parseResult.clips, [])
+    workspace = { ...workspace, clips: merged.clips, tags: merged.tags }
+    
+    const clip = workspace.clips[0]
+    
+    const pendingResult = State.setClipStatus(workspace, clip.id, 'pending')
+    workspace = pendingResult.state
+    
+    const publishResult = State.setClipStatus(workspace, clip.id, 'published')
+    expect(publishResult.changed).toBe(false)
+    expect(publishResult.error).toBe('待核实片段禁止发布，请先核实后再操作')
+    
+    const disabledResult = State.setClipStatus(workspace, clip.id, 'disabled')
+    workspace = disabledResult.state
+    
+    const publishResult2 = State.setClipStatus(workspace, clip.id, 'published')
+    expect(publishResult2.changed).toBe(false)
+    expect(publishResult2.error).toBe('禁用片段禁止发布')
+  })
+})
+
+describe('数据持久化和容错测试', () => {
+  let workspace: WorkspaceState
+  let historyState: History.HistoryState
+
+  beforeEach(() => {
+    workspace = State.createInitialState()
+    historyState = History.createInitialHistory()
+  })
+
+  it('1. 序列化和反序列化后数据一致', () => {
+    const parseResult = Parser.parseTranscript(sampleTranscript, sampleConfig)
+    const merged = Parser.mergeParseResult([], [], parseResult.clips, parseResult.tags)
+    workspace = { ...workspace, clips: merged.clips, tags: merged.tags }
+    
+    const importEntry = createHistoryEntry(
+      'import',
+      { clips: [], tags: [] },
+      { clips: workspace.clips, tags: workspace.tags },
+      `导入 ${parseResult.clips.length} 个片段`
+    )
+    historyState = History.pushHistory(historyState, importEntry)
+    
+    const clip = workspace.clips[0]
+    const stateBefore = JSON.parse(JSON.stringify(workspace))
+    const statusResult = State.setClipStatus(workspace, clip.id, 'pending')
+    workspace = statusResult.state
+    
+    const statusEntry = createHistoryEntry(
+      'status_change',
+      { clips: stateBefore.clips },
+      { clips: workspace.clips },
+      `片段状态变更为待核实`
+    )
+    historyState = History.pushHistory(historyState, statusEntry)
+    
+    const serialized = History.serialize(workspace, historyState)
+    const deserialized = History.deserialize(serialized)
+    
+    expect(deserialized.success).toBe(true)
+    if (deserialized.success) {
+      expect(deserialized.state.clips.length).toBe(workspace.clips.length)
+      expect(deserialized.state.tags.length).toBe(workspace.tags.length)
+      expect(deserialized.history.entries.length).toBe(historyState.entries.length)
+      
+      deserialized.state.clips.forEach((clip, index) => {
+        expect(clip.id).toBe(workspace.clips[index].id)
+        expect(clip.content).toBe(workspace.clips[index].content)
+        expect(clip.status).toBe(workspace.clips[index].status)
+      })
+    }
+  })
+
+  it('2. 坏历史文件给出恢复选项', () => {
+    const corruptedContent = `{
+      "version": "1.0.0",
+      "state": {
+        "clips": [{"id": "test", "content": "test", "status": "available", "tags": [], "references": [], "createdAt": 0, "updatedAt": 0}],
+        "tags": [],
+        "config": {}
+      },
+      "history": {
+        "entries": "not an array",
+        "currentIndex": -1
+      }
+    }`
+    
+    const result = History.deserialize(corruptedContent)
+    
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toBeDefined()
+      expect(result.recoveryOptions.length).toBeGreaterThanOrEqual(2)
+      
+      const types = result.recoveryOptions.map(o => o.type)
+      expect(types).toContain('empty')
+      expect(types).toContain('partial')
+      
+      result.recoveryOptions.forEach(option => {
+        expect(option.label).toBeDefined()
+        expect(option.description).toBeDefined()
+      })
+    }
+  })
+
+  it('3. 恢复选项可以正常工作', () => {
+    const corruptedContent = `{
+      "version": 1,
+      "workspace": {
+        "clips": [{"id": "test", "content": "test", "status": "available", "tags": [], "references": [], "createdAt": 0, "updatedAt": 0}],
+        "tags": [],
+        "config": {}
+      },
+      "history": {
+        "entries": [],
+        "currentIndex": -1
+      },
+      "malformed": ,,,
+    }`
+    
+    const result = History.deserialize(corruptedContent)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      const emptyRecover = History.recoverWithOption(corruptedContent, 'empty')
+      expect(emptyRecover.state.clips.length).toBe(0)
+      expect(emptyRecover.state.tags.length).toBe(0)
+      expect(emptyRecover.history.entries.length).toBe(0)
+    }
+  })
+})
+
+describe('标签管理测试', () => {
+  let workspace: WorkspaceState
+
+  beforeEach(() => {
+    workspace = State.createInitialState()
+  })
+
+  it('1. 添加标签时大小写不敏感去重', () => {
+    const parseResult = Parser.parseTranscript(sampleTranscript, sampleConfig)
+    const merged = Parser.mergeParseResult([], [], parseResult.clips, [])
+    workspace = { ...workspace, clips: merged.clips, tags: merged.tags }
+    
+    const clip = workspace.clips[0]
+    
+    const result0 = State.addTagToClip(workspace, clip.id, '重要观点')
+    expect(result0.changed).toBe(true)
+    workspace = result0.state
+    
+    const result1 = State.addTagToClip(workspace, clip.id, '重要观点')
+    expect(result1.changed).toBe(false)
+    
+    const result2 = State.addTagToClip(workspace, clip.id, '重要观点')
+    expect(result2.changed).toBe(false)
+    
+    const updatedClip = workspace.clips.find(c => c.id === clip.id)!
+    expect(updatedClip.tags).toContain('重要观点')
+    
+    const count = updatedClip.tags.filter(t => t.toLowerCase() === '重要观点').length
+    expect(count).toBe(1)
+  })
+
+  it('2. 删除全局标签时从所有片段中移除', () => {
+    const parseResult = Parser.parseTranscript(sampleTranscript, sampleConfig)
+    const merged = Parser.mergeParseResult([], [], parseResult.clips, ['生态保护', '可持续发展'])
+    workspace = { ...workspace, clips: merged.clips, tags: merged.tags }
+    
+    workspace.clips.forEach(clip => {
+      expect(clip.tags).toContain('生态保护')
+      expect(clip.tags).toContain('可持续发展')
+    })
+    
+    const deleteResult = State.deleteTag(workspace, '生态保护')
+    expect(deleteResult.changed).toBe(true)
+    workspace = deleteResult.state
+    
+    expect(workspace.tags).not.toContain('生态保护')
+    workspace.clips.forEach(clip => {
+      expect(clip.tags).not.toContain('生态保护')
+      expect(clip.tags).toContain('可持续发展')
+    })
+  })
+})
+
+describe('导出预检测试', () => {
+  let workspace: WorkspaceState
+
+  beforeEach(() => {
+    workspace = State.createInitialState()
+  })
+
+  it('1. 导出前预检拦截待核实片段', () => {
+    const parseResult = Parser.parseTranscript(sampleTranscript, sampleConfig)
+    const merged = Parser.mergeParseResult([], [], parseResult.clips, [])
+    workspace = { ...workspace, clips: merged.clips, tags: merged.tags }
+    
+    const clip = workspace.clips[0]
+    const pendingResult = State.setClipStatus(workspace, clip.id, 'pending')
+    workspace = pendingResult.state
+    
+    const result = Checker.checkBeforeExport(workspace)
+    
+    expect(result.allowed).toBe(false)
+    
+    const pendingClips = workspace.clips.filter(c => c.status === 'pending')
+    expect(pendingClips.length).toBeGreaterThan(0)
+    
+    const hasPendingError = result.results.some(r => 
+      r.type === 'other' && r.severity === 'error' && r.message.includes('待核实片段不能发布')
+    )
+    expect(hasPendingError).toBe(true)
+  })
+})
