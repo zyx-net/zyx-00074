@@ -45,11 +45,72 @@ export interface CheckResult {
   details?: Record<string, unknown>
 }
 
+export type ExportFormat = 'markdown' | 'json' | 'manifest'
+
 export interface ExportOptions {
-  format: 'markdown' | 'json'
+  format: ExportFormat
   includeStatus?: ClipStatus[]
   includeTags?: string[]
   outputPath?: string
+  materialTitle?: string
+  excludeSensitive?: boolean
+}
+
+export interface TagStatistics {
+  tag: string
+  count: number
+  byStatus: Record<ClipStatus, number>
+}
+
+export interface CheckSummarySnapshot {
+  totalClips: number
+  errorCount: number
+  warningCount: number
+  infoCount: number
+  byType: {
+    sensitive_word: number
+    missing_reference: number
+    other: number
+  }
+  clipsWithIssues: string[]
+}
+
+export interface PublishManifest {
+  meta: {
+    exportedAt: number
+    version: string
+    materialTitle: string
+  }
+  fragments: {
+    total: number
+    byStatus: Record<ClipStatus, number>
+    items: Array<{
+      id: string
+      speaker?: string
+      timestamp?: string
+      status: ClipStatus
+      tags: string[]
+      contentPreview: string
+      hasSensitive: boolean
+      hasReferences: boolean
+      createdAt: number
+      updatedAt: number
+    }>
+  }
+  tagStatistics: TagStatistics[]
+  configSnapshot: MaterialConfig
+  checkSummary: CheckSummarySnapshot
+  recentOperations: Array<{
+    timestamp: number
+    type: string
+    success: boolean
+    message: string
+  }>
+  exportSettings: {
+    includeStatus: ClipStatus[]
+    includeTags?: string[]
+    excludeSensitive: boolean
+  }
 }
 
 export interface ExportPackage {
@@ -60,4 +121,13 @@ export interface ExportPackage {
   }
   clips: Clip[]
   rawContent?: string
+  manifest?: PublishManifest
+}
+
+export interface ExportPreferences {
+  lastFormat: ExportFormat
+  includeStatus: ClipStatus[]
+  includeTags: string[]
+  excludeSensitive: boolean
+  materialTitle: string
 }

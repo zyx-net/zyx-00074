@@ -138,6 +138,7 @@ const App: React.FC = () => {
             exportClips={actions.exportClips}
             checkBeforeExport={actions.checkBeforeExport}
             onNavigateToCheck={() => actions.setCurrentView('check')}
+            state={state}
           />
         )
       case 'history':

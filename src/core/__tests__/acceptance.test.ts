@@ -207,8 +207,9 @@ describe('验收主链路测试', () => {
     })
     
     expect(mdResult.fileName.endsWith('.md')).toBe(true)
-    expect(mdResult.content).toContain('# 采访素材发布包')
-    expect(mdResult.content).toContain('## 片段 1')
+    expect(mdResult.content).toContain('# 未命名素材')
+    expect(mdResult.content).toContain('## 发布包信息')
+    expect(mdResult.content).toContain('### 片段 1')
     expect(mdResult.content).toContain('**状态**：')
     expect(mdResult.content).toContain('**标签**：')
     

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { ClipStatus, ExportOptions } from '../src/core/types'
+import type { ClipStatus, ExportOptions, ExportFormat, ExportPreferences, PublishManifest } from '../src/core/types'
 import type { RecoveryOption } from '../src/core/history'
 
 export interface FileAPI {
@@ -100,4 +100,4 @@ declare global {
   }
 }
 
-export type { ClipStatus, ExportOptions, RecoveryOption }
+export type { ClipStatus, ExportOptions, ExportFormat, ExportPreferences, PublishManifest, RecoveryOption }
