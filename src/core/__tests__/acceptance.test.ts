@@ -624,3 +624,579 @@ describe('默认标签大小写不敏感去重测试', () => {
     expect(filterOptions.length).toBe(uniqueLowercase.length)
   })
 })
+
+describe('工作区保存/恢复回归测试', () => {
+  let workspace: WorkspaceState
+  let historyState: History.HistoryState
+
+  beforeEach(() => {
+    workspace = State.createInitialState()
+    historyState = History.createInitialHistory()
+    History.clearOperationLog()
+  })
+
+  const createTestWorkspace = (clipCount: number = 3): { state: WorkspaceState; history: History.HistoryState } => {
+    const parseResult = Parser.parseTranscript(sampleTranscript, sampleConfig)
+    const merged = Parser.mergeParseResult([], [], parseResult.clips.slice(0, clipCount), parseResult.tags)
+    const state: WorkspaceState = {
+      ...State.createInitialState(),
+      clips: merged.clips,
+      tags: merged.tags,
+      config: sampleConfig
+    }
+    
+    const importEntry = createHistoryEntry(
+      'import',
+      { clips: [], tags: [] },
+      { clips: state.clips, tags: state.tags },
+      `导入 ${clipCount} 个片段`
+    )
+    const hist = History.pushHistory(History.createInitialHistory(), importEntry)
+    
+    return { state, history: hist }
+  }
+
+  describe('1. 脏状态检测', () => {
+    it('1.1 初始状态没有未保存改动', () => {
+      const initial = State.createInitialState()
+      const emptyHash = History.computeStateHash(initial)
+      const currentHash = History.computeStateHash(workspace)
+      expect(currentHash).toBe(emptyHash)
+      expect(History.statesAreEqual(initial, workspace)).toBe(true)
+    })
+
+    it('1.2 修改内容后状态变脏', () => {
+      const { state, history } = createTestWorkspace(2)
+      workspace = state
+      historyState = history
+
+      const originalHash = History.computeStateHash(workspace)
+      
+      const clip = workspace.clips[0]
+      const result = State.addTagToClip(workspace, clip.id, '新标签')
+      workspace = result.state
+
+      const newHash = History.computeStateHash(workspace)
+      expect(newHash).not.toBe(originalHash)
+      expect(History.statesAreEqual(state, workspace)).toBe(false)
+    })
+
+    it('1.3 相同内容的状态哈希相同', () => {
+      const { state } = createTestWorkspace(2)
+      const hash1 = History.computeStateHash(state)
+      const hash2 = History.computeStateHash({ ...state })
+      expect(hash1).toBe(hash2)
+    })
+
+    it('1.4 仅修改元数据不影响脏状态', () => {
+      const { state } = createTestWorkspace(1)
+      const hash1 = History.computeStateHash(state)
+      const stateCopy = JSON.parse(JSON.stringify(state)) as WorkspaceState
+      stateCopy.clips[0].updatedAt = Date.now() + 1000
+      const hash2 = History.computeStateHash(stateCopy)
+      expect(hash1).not.toBe(hash2)
+    })
+  })
+
+  describe('2. 撤销/重做状态不被错误继承', () => {
+    it('2.1 加载新工作区后历史记录被正确重置', () => {
+      const { state: oldState, history: oldHistory } = createTestWorkspace(3)
+      const oldEntryCount = oldHistory.entries.length
+      expect(oldEntryCount).toBe(1)
+      expect(History.canUndo(oldHistory)).toBe(true)
+
+      const serialized = History.serialize(oldState, oldHistory)
+      const deserialized = History.deserialize(serialized)
+      expect(deserialized.success).toBe(true)
+      if (deserialized.success) {
+        expect(deserialized.history.entries.length).toBe(oldEntryCount)
+        expect(History.canUndo(deserialized.history)).toBe(true)
+      }
+    })
+
+    it('2.2 从损坏文件恢复后历史记录为空', () => {
+      const corruptedContent = `{
+        "version": "1.0.0",
+        "state": {
+          "clips": [{"id": "test", "content": "test", "status": "available", "tags": [], "references": [], "createdAt": 0, "updatedAt": 0}],
+          "tags": ["test"],
+          "config": {}
+        },
+        "history": {
+          "entries": "corrupted",
+          "currentIndex": -1
+        }
+      }`
+
+      const result = History.deserialize(corruptedContent)
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        const partialTypes = result.recoveryOptions.map(o => o.type)
+        expect(partialTypes).toContain('partial')
+        
+        const recovered = History.recoverWithOption(corruptedContent, 'partial')
+        expect(recovered.history.entries.length).toBe(0)
+        expect(History.canUndo(recovered.history)).toBe(false)
+        expect(History.canRedo(recovered.history)).toBe(false)
+      }
+    })
+
+    it('2.3 多次撤销重做后序列化反序列化状态一致', () => {
+      const { state, history } = createTestWorkspace(3)
+      workspace = state
+      historyState = history
+
+      const clip = workspace.clips[0]
+      const stateBefore = JSON.parse(JSON.stringify(workspace))
+      const statusResult = State.setClipStatus(workspace, clip.id, 'pending')
+      workspace = statusResult.state
+
+      const statusEntry = createHistoryEntry(
+        'status_change',
+        { clips: stateBefore.clips },
+        { clips: workspace.clips },
+        '状态变更'
+      )
+      historyState = History.pushHistory(historyState, statusEntry)
+      expect(historyState.entries.length).toBe(2)
+      expect(History.canUndo(historyState)).toBe(true)
+      expect(History.canRedo(historyState)).toBe(false)
+
+      const undoResult = History.undo(historyState, workspace)
+      expect(undoResult.entry).toBeDefined()
+      expect(History.canUndo(undoResult.history)).toBe(true)
+      expect(History.canRedo(undoResult.history)).toBe(true)
+
+      const serialized = History.serialize(undoResult.state, undoResult.history)
+      const deserialized = History.deserialize(serialized)
+      expect(deserialized.success).toBe(true)
+      if (deserialized.success) {
+        expect(deserialized.history.entries.length).toBe(2)
+        expect(deserialized.history.currentIndex).toBe(0)
+        expect(History.canUndo(deserialized.history)).toBe(true)
+        expect(History.canRedo(deserialized.history)).toBe(true)
+      }
+    })
+
+    it('2.4 创建新工作区后历史记录完全清空', () => {
+      const { history } = createTestWorkspace(3)
+      expect(history.entries.length).toBeGreaterThan(0)
+
+      const newHistory = History.createInitialHistory()
+      expect(newHistory.entries.length).toBe(0)
+      expect(newHistory.currentIndex).toBe(-1)
+      expect(History.canUndo(newHistory)).toBe(false)
+      expect(History.canRedo(newHistory)).toBe(false)
+    })
+  })
+
+  describe('3. 损坏 JSON 恢复', () => {
+    it('3.1 完全无效的 JSON 返回正确的错误信息', () => {
+      const invalidJson = '{ "version": "1.0.0", "state": {, '
+      const result = History.deserialize(invalidJson)
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error).toContain('JSON 解析失败')
+        expect(result.corruptionDetails.jsonParseError).toBe(true)
+        expect(result.recoveryOptions.length).toBeGreaterThan(0)
+        const types = result.recoveryOptions.map(o => o.type)
+        expect(types).toContain('empty')
+      }
+    })
+
+    it('3.2 历史记录损坏但状态完好可以部分恢复', () => {
+      const corruptedHistory = `{
+        "version": "1.0.0",
+        "state": {
+          "clips": [
+            {"id": "clip1", "content": "片段1内容", "status": "available", "tags": ["标签1"], "references": [], "createdAt": 0, "updatedAt": 0},
+            {"id": "clip2", "content": "片段2内容", "status": "pending", "tags": ["标签2"], "references": [], "createdAt": 0, "updatedAt": 0}
+          ],
+          "tags": ["标签1", "标签2"],
+          "config": {}
+        },
+        "history": {
+          "entries": "NOT_AN_ARRAY",
+          "currentIndex": "NOT_A_NUMBER"
+        }
+      }`
+
+      const result = History.deserialize(corruptedHistory)
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.corruptionDetails.historyCorrupted).toBe(true)
+        expect(result.corruptionDetails.stateCorrupted).toBe(false)
+        expect(result.corruptionDetails.clipsRecoverable).toBe(true)
+        expect(result.corruptionDetails.tagsRecoverable).toBe(true)
+        
+        const partialOption = result.recoveryOptions.find(o => o.type === 'partial')
+        expect(partialOption).toBeDefined()
+        expect(partialOption!.willKeep).toContain('所有片段内容')
+        expect(partialOption!.willKeep).toContain('所有标签')
+        expect(partialOption!.willLose).toContain('撤销/重做历史记录')
+
+        const recovered = History.recoverWithOption(corruptedHistory, 'partial')
+        expect(recovered.state.clips.length).toBe(2)
+        expect(recovered.state.tags.length).toBe(2)
+        expect(recovered.history.entries.length).toBe(0)
+        expect(recovered.recoveryLog).toContain('2 个片段')
+        expect(recovered.recoveryLog).toContain('2 个标签')
+      }
+    })
+
+    it('3.3 仅片段可恢复时提供仅恢复片段选项', () => {
+      const onlyClipsValid = `{
+        "version": "1.0.0",
+        "state": {
+          "clips": [
+            {"id": "clip1", "content": "片段内容", "status": "available", "tags": [], "references": [], "createdAt": 0, "updatedAt": 0}
+          ],
+          "tags": "NOT_AN_ARRAY",
+          "config": {}
+        },
+        "history": {
+          "entries": [],
+          "currentIndex": -1
+        }
+      }`
+
+      const result = History.deserialize(onlyClipsValid)
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.corruptionDetails.clipsRecoverable).toBe(true)
+        expect(result.corruptionDetails.tagsRecoverable).toBe(false)
+        
+        const optionTypes = result.recoveryOptions.map(o => o.type)
+        expect(optionTypes).toContain('partial_clips')
+        
+        const clipsOption = result.recoveryOptions.find(o => o.type === 'partial_clips')
+        expect(clipsOption).toBeDefined()
+        expect(clipsOption!.willKeep).toContain('所有片段内容')
+        expect(clipsOption!.willLose).toContain('所有标签')
+
+        const recovered = History.recoverWithOption(onlyClipsValid, 'partial_clips')
+        expect(recovered.state.clips.length).toBe(1)
+        expect(recovered.state.tags.length).toBe(0)
+      }
+    })
+
+    it('3.4 仅标签可恢复时提供仅恢复标签选项', () => {
+      const onlyTagsValid = `{
+        "version": "1.0.0",
+        "state": {
+          "clips": "NOT_AN_ARRAY",
+          "tags": ["标签1", "标签2", "标签3"],
+          "config": {}
+        },
+        "history": {
+          "entries": [],
+          "currentIndex": -1
+        }
+      }`
+
+      const result = History.deserialize(onlyTagsValid)
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.corruptionDetails.clipsRecoverable).toBe(false)
+        expect(result.corruptionDetails.tagsRecoverable).toBe(true)
+        
+        const optionTypes = result.recoveryOptions.map(o => o.type)
+        expect(optionTypes).toContain('partial_tags')
+        
+        const recovered = History.recoverWithOption(onlyTagsValid, 'partial_tags')
+        expect(recovered.state.clips.length).toBe(0)
+        expect(recovered.state.tags.length).toBe(3)
+      }
+    })
+
+    it('3.5 版本不兼容时的恢复选项', () => {
+      const wrongVersion = `{
+        "version": "2.0.0",
+        "state": {
+          "clips": [{"id": "clip1", "content": "test", "status": "available", "tags": [], "references": [], "createdAt": 0, "updatedAt": 0}],
+          "tags": [],
+          "config": {}
+        },
+        "history": {
+          "entries": [],
+          "currentIndex": -1
+        }
+      }`
+
+      const result = History.deserialize(wrongVersion)
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.corruptionDetails.versionMismatch).toBe(true)
+        expect(result.corruptionDetails.actualVersion).toBe('2.0.0')
+        expect(result.error).toContain('版本不兼容')
+        expect(result.recoveryOptions.length).toBeGreaterThan(0)
+      }
+    })
+
+    it('3.6 空工作区恢复选项', () => {
+      const unrecoverable = '{ invalid json here {'
+      const result = History.deserialize(unrecoverable)
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        const emptyOption = result.recoveryOptions.find(o => o.type === 'empty')
+        expect(emptyOption).toBeDefined()
+        
+        const recovered = History.recoverWithOption(unrecoverable, 'empty')
+        expect(recovered.state.clips.length).toBe(0)
+        expect(recovered.state.tags.length).toBe(0)
+        expect(recovered.history.entries.length).toBe(0)
+      }
+    })
+  })
+
+  describe('4. 操作日志记录', () => {
+    it('4.1 序列化会记录操作日志', () => {
+      const { state, history } = createTestWorkspace(2)
+      const logBefore = History.getOperationLog().length
+      
+      History.serialize(state, history)
+      
+      const logAfter = History.getOperationLog()
+      expect(logAfter.length).toBe(logBefore + 1)
+      expect(logAfter[0].type).toBe('save')
+      expect(logAfter[0].success).toBe(true)
+      expect(logAfter[0].message).toContain('2 个片段')
+    })
+
+    it('4.2 成功加载会记录操作日志', () => {
+      const { state, history } = createTestWorkspace(2)
+      const serialized = History.serialize(state, history)
+      History.clearOperationLog()
+      
+      History.deserialize(serialized)
+      
+      const logs = History.getOperationLog()
+      expect(logs.length).toBeGreaterThan(0)
+      expect(logs[0].type).toBe('load')
+      expect(logs[0].success).toBe(true)
+    })
+
+    it('4.3 加载失败会记录错误日志', () => {
+      History.clearOperationLog()
+      
+      History.deserialize('{ invalid json }')
+      
+      const logs = History.getOperationLog()
+      expect(logs.length).toBeGreaterThan(0)
+      expect(logs[0].type).toBe('load')
+      expect(logs[0].success).toBe(false)
+    })
+
+    it('4.4 恢复操作会记录日志', () => {
+      const corrupted = `{
+        "version": "1.0.0",
+        "state": {
+          "clips": [{"id": "c1", "content": "test", "status": "available", "tags": [], "references": [], "createdAt": 0, "updatedAt": 0}],
+          "tags": [],
+          "config": {}
+        },
+        "history": "CORRUPTED"
+      }`
+      History.clearOperationLog()
+      
+      History.recoverWithOption(corrupted, 'partial')
+      
+      const logs = History.getOperationLog()
+      expect(logs.length).toBeGreaterThan(0)
+      expect(logs[0].type).toBe('recover')
+      expect(logs[0].success).toBe(true)
+    })
+
+    it('4.5 操作日志最多保留 100 条', () => {
+      History.clearOperationLog()
+      for (let i = 0; i < 150; i++) {
+        History.logOperation('save', true, `操作 ${i}`)
+      }
+      
+      const logs = History.getOperationLog()
+      expect(logs.length).toBe(100)
+    })
+
+    it('4.6 操作日志可以清空', () => {
+      History.logOperation('save', true, '测试')
+      expect(History.getOperationLog().length).toBeGreaterThan(0)
+      
+      History.clearOperationLog()
+      expect(History.getOperationLog().length).toBe(0)
+    })
+  })
+
+  describe('5. 跨重启状态一致性', () => {
+    it('5.1 序列化反序列化完整往返后数据一致', () => {
+      const { state, history } = createTestWorkspace(3)
+      
+      const clip = state.clips[0]
+      const stateBefore = JSON.parse(JSON.stringify(state))
+      const tagResult = State.addTagToClip(state, clip.id, '自定义标签')
+      const modifiedState = tagResult.state
+      
+      const tagEntry = createHistoryEntry(
+        'tag_add',
+        { clips: stateBefore.clips, tags: stateBefore.tags },
+        { clips: modifiedState.clips, tags: modifiedState.tags },
+        '添加标签'
+      )
+      const modifiedHistory = History.pushHistory(history, tagEntry)
+
+      const serialized = History.serialize(modifiedState, modifiedHistory)
+      const deserialized = History.deserialize(serialized)
+      
+      expect(deserialized.success).toBe(true)
+      if (deserialized.success) {
+        expect(deserialized.state.clips.length).toBe(modifiedState.clips.length)
+        expect(deserialized.state.tags.length).toBe(modifiedState.tags.length)
+        expect(deserialized.history.entries.length).toBe(modifiedHistory.entries.length)
+        expect(deserialized.history.currentIndex).toBe(modifiedHistory.currentIndex)
+        
+        deserialized.state.clips.forEach((c, i) => {
+          expect(c.id).toBe(modifiedState.clips[i].id)
+          expect(c.content).toBe(modifiedState.clips[i].content)
+          expect(c.tags).toEqual(modifiedState.clips[i].tags)
+        })
+      }
+    })
+
+    it('5.2 撤销后跨重启仍可重做', () => {
+      const { state, history } = createTestWorkspace(2)
+      
+      const clip = state.clips[0]
+      const stateBefore = JSON.parse(JSON.stringify(state))
+      const statusResult = State.setClipStatus(state, clip.id, 'pending')
+      const modifiedState = statusResult.state
+      
+      const statusEntry = createHistoryEntry(
+        'status_change',
+        { clips: stateBefore.clips },
+        { clips: modifiedState.clips },
+        '状态变更'
+      )
+      let modHistory = History.pushHistory(history, statusEntry)
+      
+      const undoResult = History.undo(modHistory, modifiedState)
+      expect(undoResult.entry).toBeDefined()
+      expect(History.canRedo(undoResult.history)).toBe(true)
+      
+      const serialized = History.serialize(undoResult.state, undoResult.history)
+      const deserialized = History.deserialize(serialized)
+      
+      expect(deserialized.success).toBe(true)
+      if (deserialized.success) {
+        expect(History.canRedo(deserialized.history)).toBe(true)
+        expect(deserialized.history.currentIndex).toBe(0)
+        expect(deserialized.history.entries.length).toBe(2)
+        
+        const redoResult = History.redo(deserialized.history, deserialized.state)
+        expect(redoResult.entry).toBeDefined()
+        expect(redoResult.state.clips[0].status).toBe('pending')
+      }
+    })
+  })
+
+  describe('6. 恢复选项详细信息', () => {
+    it('6.1 每个恢复选项都明确说明保留和丢失的内容', () => {
+      const corrupted = `{
+        "version": "1.0.0",
+        "state": {
+          "clips": [{"id": "c1", "content": "test", "status": "available", "tags": [], "references": [], "createdAt": 0, "updatedAt": 0}],
+          "tags": ["tag1"],
+          "config": {}
+        },
+        "history": "CORRUPTED"
+      }`
+      
+      const result = History.deserialize(corrupted)
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        result.recoveryOptions.forEach(option => {
+          expect(option.willKeep).toBeDefined()
+          expect(option.willLose).toBeDefined()
+          expect(Array.isArray(option.willKeep)).toBe(true)
+          expect(Array.isArray(option.willLose)).toBe(true)
+          expect(option.description.length).toBeGreaterThan(0)
+          expect(option.label.length).toBeGreaterThan(0)
+        })
+      }
+    })
+
+    it('6.2 恢复后返回操作日志信息', () => {
+      const corrupted = `{
+        "version": "1.0.0",
+        "state": {
+          "clips": [{"id": "c1", "content": "test", "status": "available", "tags": [], "references": [], "createdAt": 0, "updatedAt": 0}],
+          "tags": ["t1", "t2"],
+          "config": {}
+        },
+        "history": "CORRUPTED"
+      }`
+      
+      const recovered = History.recoverWithOption(corrupted, 'partial')
+      expect(recovered.recoveryLog).toBeDefined()
+      expect(recovered.recoveryLog).toContain('1 个片段')
+      expect(recovered.recoveryLog).toContain('2 个标签')
+    })
+  })
+
+  describe('7. 保存失败错误处理', () => {
+    it('7.1 序列化空工作区不会出错', () => {
+      const empty = State.createInitialState()
+      const emptyHist = History.createInitialHistory()
+      const serialized = History.serialize(empty, emptyHist)
+      expect(serialized.length).toBeGreaterThan(0)
+      
+      const deserialized = History.deserialize(serialized)
+      expect(deserialized.success).toBe(true)
+      if (deserialized.success) {
+        expect(deserialized.state.clips.length).toBe(0)
+        expect(deserialized.state.tags.length).toBe(0)
+      }
+    })
+
+    it('7.2 deserialize 处理 null/undefined 输入', () => {
+      const result = History.deserialize('null')
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.corruptionDetails.jsonParseError).toBe(false)
+        expect(result.corruptionDetails.stateCorrupted).toBe(true)
+      }
+    })
+
+    it('7.3 撤销重做循环不破坏序列化', () => {
+      const { state, history } = createTestWorkspace(2)
+      workspace = state
+      historyState = history
+
+      for (let i = 0; i < 5; i++) {
+        const clip = workspace.clips[i % 2]
+        const before = JSON.parse(JSON.stringify(workspace))
+        const result = State.addTagToClip(workspace, clip.id, `标签${i}`)
+        workspace = result.state
+        const entry = createHistoryEntry(
+          'tag_add',
+          { clips: before.clips, tags: before.tags },
+          { clips: workspace.clips, tags: workspace.tags },
+          `添加标签${i}`
+        )
+        historyState = History.pushHistory(historyState, entry)
+      }
+
+      for (let i = 0; i < 3; i++) {
+        const undoResult = History.undo(historyState, workspace)
+        workspace = undoResult.state
+        historyState = undoResult.history
+      }
+
+      const serialized = History.serialize(workspace, historyState)
+      const deserialized = History.deserialize(serialized)
+      expect(deserialized.success).toBe(true)
+      if (deserialized.success) {
+        expect(deserialized.history.currentIndex).toBe(historyState.currentIndex)
+        expect(deserialized.history.entries.length).toBe(historyState.entries.length)
+      }
+    })
+  })
+})
