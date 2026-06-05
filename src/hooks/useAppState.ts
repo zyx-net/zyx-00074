@@ -6,6 +6,29 @@ import * as Parser from '../core/parser'
 import * as Checker from '../core/checker'
 import * as Exporter from '../core/exporter'
 
+type LoadResult =
+  | { canceled: true }
+  | { success: true; content: string; path: string }
+  | { success: false; error: string }
+
+type LoadAutosaveResult = {
+  success: boolean
+  content?: string | null
+  hasBackup: boolean
+  error?: string
+}
+
+type SaveAsResult =
+  | { canceled: true }
+  | { success: true; path: string }
+  | { success: false; error: string }
+
+type AutosaveResult = {
+  success: boolean
+  path?: string
+  error?: string
+}
+
 export interface ToastMessage {
   id: string
   type: 'success' | 'error' | 'warning' | 'info'
@@ -116,7 +139,7 @@ export const useAppState = () => {
     }
     autosaveTimerRef.current = setTimeout(() => {
       const serialized = History.serialize(state.workspace, state.history)
-      window.workspaceAPI.autosave(serialized).then(result => {
+      window.workspaceAPI.autosave(serialized).then((result: AutosaveResult) => {
         if (result.success) {
           markAsSaved()
         }
@@ -132,7 +155,7 @@ export const useAppState = () => {
       let loadedPath: string | undefined = filePath
 
       if (!loadContent) {
-        const result = await window.workspaceAPI.load(filePath)
+        const result = await window.workspaceAPI.load(filePath) as LoadResult
         if ('canceled' in result && result.canceled) {
           setState(prev => ({ ...prev, isLoading: false }))
           return { canceled: true }
@@ -140,7 +163,7 @@ export const useAppState = () => {
         if ('success' in result && result.success && result.content) {
           loadContent = result.content
           loadedPath = result.path
-        } else if ('error' in result && result.error) {
+        } else if ('success' in result && !result.success && 'error' in result) {
           throw new Error(result.error)
         }
       }
@@ -223,29 +246,29 @@ export const useAppState = () => {
     }
 
     if (choice === 'saveas') {
-      setState(prev => ({ ...prev, unsavedChangesPrompt: null }))
-      const saveResult = await window.workspaceAPI.saveAs(
-        History.serialize(state.workspace, state.history)
-      )
-      if ('success' in saveResult && saveResult.success && saveResult.path) {
-        markAsSaved()
-        setState(prev => ({
-          ...prev,
-          currentWorkspacePath: saveResult.path
-        }))
-        showToast('success', '工作区已另存，继续加载')
-        History.logOperation('save', true, `工作区已另存为：${saveResult.path}`)
-        refreshOperationLog()
-      } else if ('canceled' in saveResult && saveResult.canceled) {
-        showToast('info', '已取消保存')
-        return
-      } else if ('error' in saveResult) {
-        showToast('error', `保存失败：${saveResult.error}`)
-        History.logOperation('save', false, `另存为失败：${saveResult.error}`)
-        refreshOperationLog()
-        return
-      }
+    setState(prev => ({ ...prev, unsavedChangesPrompt: null }))
+    const saveResult = await window.workspaceAPI.saveAs(
+      History.serialize(state.workspace, state.history)
+    ) as SaveAsResult
+    if ('success' in saveResult && saveResult.success && saveResult.path) {
+      markAsSaved()
+      setState(prev => ({
+        ...prev,
+        currentWorkspacePath: saveResult.path
+      }))
+      showToast('success', '工作区已另存，继续加载')
+      History.logOperation('save', true, `工作区已另存为：${saveResult.path}`)
+      refreshOperationLog()
+    } else if ('canceled' in saveResult && saveResult.canceled) {
+      showToast('info', '已取消保存')
+      return
+    } else if ('success' in saveResult && !saveResult.success && 'error' in saveResult) {
+      showToast('error', `保存失败：${saveResult.error}`)
+      History.logOperation('save', false, `另存为失败：${saveResult.error}`)
+      refreshOperationLog()
+      return
     }
+  }
 
     if (choice === 'overwrite') {
       setState(prev => ({ ...prev, unsavedChangesPrompt: null }))
@@ -663,7 +686,7 @@ export const useAppState = () => {
 
   const loadAutosave = useCallback(async () => {
     try {
-      const result = await window.workspaceAPI.loadAutosave()
+      const result = await window.workspaceAPI.loadAutosave() as LoadAutosaveResult
       if (result.success && result.content) {
         const deserialized = History.deserialize(result.content)
 
@@ -711,7 +734,7 @@ export const useAppState = () => {
 
   const saveWorkspaceAs = useCallback(async () => {
     const serialized = History.serialize(state.workspace, state.history)
-    const result = await window.workspaceAPI.saveAs(serialized)
+    const result = await window.workspaceAPI.saveAs(serialized) as SaveAsResult
 
     if ('canceled' in result && result.canceled) {
       History.logOperation('save', false, '用户取消另存为')
@@ -731,8 +754,8 @@ export const useAppState = () => {
         clipCount: state.workspace.clips.length
       })
       refreshOperationLog()
-    } else if ('error' in result && result.error) {
-      let errorMessage = result.error
+    } else if ('success' in result && !result.success && 'error' in result && result.error) {
+      let errorMessage: string = result.error
       if (errorMessage.includes('permission') || errorMessage.includes('权限') || errorMessage.includes('EPERM')) {
         errorMessage = '保存失败：没有写入权限，请检查文件是否被占用或选择其他位置'
       } else if (errorMessage.includes('ENOENT')) {

@@ -14,6 +14,7 @@ import type { RecoveryOption } from './core/history'
 const App: React.FC = () => {
   const {
     state,
+    hasUnsavedChanges,
     actions,
     canUndo,
     canRedo,
@@ -169,7 +170,12 @@ const App: React.FC = () => {
                   • 工作区: {state.currentWorkspacePath.split('\\').pop()}
                 </span>
               )}
-              {state.lastSavedAt && (
+              {hasUnsavedChanges && (
+                <span style={{ marginLeft: '12px', color: '#ff9800', fontWeight: 500 }}>
+                  • ⚠ 有未保存改动
+                </span>
+              )}
+              {state.lastSavedAt && !hasUnsavedChanges && (
                 <span style={{ marginLeft: '12px' }}>
                   • 已保存 {new Date(state.lastSavedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
                 </span>
@@ -247,11 +253,7 @@ const App: React.FC = () => {
             <button
               className="btn btn-secondary"
               style={{ width: '100%', justifyContent: 'center' }}
-              onClick={() => {
-                if (confirm('确定要创建新工作区吗？当前数据将被清除。')) {
-                  actions.newWorkspace()
-                }
-              }}
+              onClick={() => actions.newWorkspace()}
             >
               ➕ 新建工作区
             </button>
@@ -312,8 +314,72 @@ const App: React.FC = () => {
                       </div>
                     </div>
                   </button>
-                ))}
+                  ))}
               </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!state.unsavedChangesPrompt?.isOpen}
+        onClose={() => {}}
+        title="未保存的改动"
+        footer={null}
+      >
+        {state.unsavedChangesPrompt && (
+          <div>
+            <div className="alert alert-warning" style={{ marginBottom: '20px' }}>
+              <span>⚠</span>
+              <div>
+                <strong>当前工作区有未保存的改动</strong>
+                <div style={{ fontSize: '12px', marginTop: '4px' }}>
+                  {state.unsavedChangesPrompt.pendingAction === 'load' && '加载新工作区将覆盖当前未保存的内容。'}
+                  {state.unsavedChangesPrompt.pendingAction === 'autosave' && '恢复自动保存将覆盖当前未保存的内容。'}
+                  {state.unsavedChangesPrompt.pendingAction === 'new' && '创建新工作区将覆盖当前未保存的内容。'}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <button
+                className="btn btn-primary"
+                onClick={() => actions.resolveUnsavedChanges('keep')}
+                style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+              >
+                <div>
+                  <strong>🔒 保留当前</strong>
+                  <div style={{ fontSize: '12px', opacity: 0.8, fontWeight: 'normal' }}>
+                    取消本次操作，继续编辑当前工作区
+                  </div>
+                </div>
+              </button>
+
+              <button
+                className="btn btn-secondary"
+                onClick={() => actions.resolveUnsavedChanges('overwrite')}
+                style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+              >
+                <div>
+                  <strong>⚠ 丢弃当前并加载</strong>
+                  <div style={{ fontSize: '12px', opacity: 0.8, fontWeight: 'normal' }}>
+                    放弃所有未保存改动，继续加载
+                  </div>
+                </div>
+              </button>
+
+              <button
+                className="btn btn-secondary"
+                onClick={() => actions.resolveUnsavedChanges('saveas')}
+                style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+              >
+                <div>
+                  <strong>💾 先另存当前工作区</strong>
+                  <div style={{ fontSize: '12px', opacity: 0.8, fontWeight: 'normal' }}>
+                    保存当前工作区后再继续
+                  </div>
+                </div>
+              </button>
             </div>
           </div>
         )}
