@@ -1,4 +1,4 @@
-import type { WorkspaceState, CheckResult, Clip, MaterialConfig } from './types'
+import type { WorkspaceState, CheckResult, Clip, MaterialConfig, ExportOptions, ClipStatus } from './types'
 
 const DEFAULT_SENSITIVE_WORDS = [
   '敏感词示例',
@@ -266,19 +266,73 @@ const buildSummary = (results: CheckResult[], totalClips: number): CheckSummary 
   return summary
 }
 
-export const checkBeforeExport = (
-  state: WorkspaceState
-): { allowed: boolean; results: CheckResult[]; summary: CheckSummary } => {
-  const { results, summary } = checkAllClips(state)
+const EXPORTABLE_STATUSES: ClipStatus[] = ['available', 'published']
 
-  const blockingErrors = results.filter(
+const hasSensitiveWords = (clip: Clip, sensitiveWords: string[]): boolean => {
+  if (!sensitiveWords.length) return false
+  const content = clip.content.toLowerCase()
+  const notes = clip.notes?.toLowerCase() || ''
+  return sensitiveWords.some(w => content.includes(w.toLowerCase()) || notes.includes(w.toLowerCase()))
+}
+
+const filterClipsForExport = (
+  clips: Clip[],
+  options: ExportOptions,
+  configSensitiveWords: string[] = []
+): Clip[] => {
+  const includeStatuses = options.includeStatus ?? EXPORTABLE_STATUSES
+  const includeTags = options.includeTags
+  const excludeSensitive = options.excludeSensitive ?? true
+  const sensitiveWords = configSensitiveWords
+
+  return clips.filter(clip => {
+    if (!includeStatuses.includes(clip.status)) return false
+    if (excludeSensitive && hasSensitiveWords(clip, sensitiveWords)) return false
+    if (includeTags && includeTags.length > 0) {
+      const clipTagSet = new Set(clip.tags.map(t => t.toLowerCase()))
+      const hasMatchingTag = includeTags.some(tag => clipTagSet.has(tag.toLowerCase()))
+      if (!hasMatchingTag) return false
+    }
+    return true
+  })
+}
+
+export const checkBeforeExport = (
+  state: WorkspaceState,
+  options?: ExportOptions
+): { allowed: boolean; results: CheckResult[]; summary: CheckSummary } => {
+  const sensitiveWords = state.config.sensitiveWords || []
+  const filteredClips = options ? filterClipsForExport(state.clips, options, sensitiveWords) : state.clips
+  
+  const context = buildCheckContext(state.config)
+  const allResults: CheckResult[] = []
+
+  for (const clip of filteredClips) {
+    allResults.push(...findSensitiveWordsInClip(clip, context))
+    allResults.push(...checkReferencesInClip(clip, context))
+    allResults.push(...checkClipStatusIssues(clip))
+    allResults.push(...checkClipContentIssues(clip))
+  }
+
+  const summary = buildSummary(allResults, filteredClips.length)
+
+  const blockingErrors = allResults.filter(
     r => r.severity === 'error' || r.type === 'missing_reference'
   )
 
-  const pendingClips = state.clips.filter(c => c.status === 'pending')
-  if (pendingClips.length > 0) {
-    pendingClips.forEach(clip => {
-      results.push({
+  let pendingToCheck: Clip[] = []
+  if (!options) {
+    pendingToCheck = state.clips.filter(c => c.status === 'pending')
+  } else {
+    const includePending = options.includeStatus?.includes('pending') ?? false
+    if (includePending) {
+      pendingToCheck = filteredClips.filter(c => c.status === 'pending')
+    }
+  }
+
+  if (pendingToCheck.length > 0) {
+    pendingToCheck.forEach(clip => {
+      allResults.push({
         type: 'other',
         severity: 'error',
         clipId: clip.id,
@@ -286,13 +340,13 @@ export const checkBeforeExport = (
         details: { status: clip.status }
       })
     })
-    summary.errorCount += pendingClips.length
-    summary.byType.other += pendingClips.length
+    summary.errorCount += pendingToCheck.length
+    summary.byType.other += pendingToCheck.length
   }
 
-  const allowed = blockingErrors.length === 0 && pendingClips.length === 0
+  const allowed = blockingErrors.length === 0 && pendingToCheck.length === 0
 
-  return { allowed, results, summary }
+  return { allowed, results: allResults, summary }
 }
 
 export const addSensitiveWord = (

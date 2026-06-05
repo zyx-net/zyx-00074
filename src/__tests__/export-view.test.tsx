@@ -700,4 +700,263 @@ describe('ExportView 界面交互测试', () => {
       }))
     }, { timeout: 10000 })
   })
+
+  describe('11. 混合状态素材导出回归测试', () => {
+    const createMixedStatusClips = (): Clip[] => [
+      {
+        id: 'clip-1',
+        content: '【记者】: 这是可用片段内容。',
+        status: 'available' as ClipStatus,
+        speaker: '记者',
+        tags: ['生态保护'],
+        notes: '',
+        references: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      },
+      {
+        id: 'clip-2',
+        content: '【张教授】: 这是待核实片段，需要确认。',
+        status: 'pending' as ClipStatus,
+        speaker: '张教授',
+        tags: ['政策'],
+        notes: '',
+        references: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      },
+      {
+        id: 'clip-3',
+        content: '【记者】: 这是已发布片段。',
+        status: 'published' as ClipStatus,
+        speaker: '记者',
+        tags: ['生态保护'],
+        notes: '',
+        references: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      },
+      {
+        id: 'clip-4',
+        content: '【张教授】: 这是禁用片段。',
+        status: 'disabled' as ClipStatus,
+        speaker: '张教授',
+        tags: ['内部'],
+        notes: '',
+        references: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      }
+    ]
+
+    it('11.1 默认排除待核实时，存在待核实片段不阻塞导出', () => {
+      const mixedClips = createMixedStatusClips()
+
+      mockCheckBeforeExport.mockReturnValue({
+        allowed: true,
+        results: [],
+        summary: {
+          totalClips: 2,
+          errorCount: 0,
+          warningCount: 0,
+          infoCount: 0,
+          byType: {
+            sensitive_word: 0,
+            missing_reference: 0,
+            other: 0
+          },
+          clipsWithIssues: []
+        } as unknown as CheckSummary
+      })
+
+      render(<ExportView
+        clips={mixedClips}
+        tags={['生态保护', '政策', '内部']}
+        exportClips={mockExportClips}
+        checkBeforeExport={mockCheckBeforeExport}
+        onNavigateToCheck={mockOnNavigateToCheck}
+        state={mockState}
+      />)
+
+      expect(screen.getByTestId('export-count-info')).toHaveTextContent(/将导出 2 个片段/)
+      expect(screen.getByTestId('export-submit-btn')).not.toBeDisabled()
+
+      fireEvent.click(screen.getByTestId('export-check-btn'))
+      expect(mockCheckBeforeExport).toHaveBeenCalledWith(expect.objectContaining({
+        includeStatus: ['available', 'published'],
+        excludeSensitive: true
+      }))
+      expect(screen.getByTestId('export-submit-btn')).not.toBeDisabled()
+    })
+
+    it('11.2 主动选择包含待核实时，预检仍拦截', () => {
+      const mixedClips = createMixedStatusClips()
+
+      mockCheckBeforeExport.mockImplementation((options: ExportOptions) => {
+        if (options.includeStatus?.includes('pending')) {
+          return {
+            allowed: false,
+            results: [{
+              type: 'other',
+              severity: 'error',
+              clipId: 'clip-2',
+              message: '待核实片段不能发布，请先核实或禁用',
+              details: { status: 'pending' }
+            }],
+            summary: {
+              totalClips: 3,
+              errorCount: 1,
+              warningCount: 0,
+              infoCount: 0,
+              byType: {
+                sensitive_word: 0,
+                missing_reference: 0,
+                other: 1
+              },
+              clipsWithIssues: ['clip-2']
+            } as unknown as CheckSummary
+          }
+        }
+        return {
+          allowed: true,
+          results: [],
+          summary: {
+            totalClips: 2,
+            errorCount: 0,
+            warningCount: 0,
+            infoCount: 0,
+            byType: {
+              sensitive_word: 0,
+              missing_reference: 0,
+              other: 0
+            },
+            clipsWithIssues: []
+          } as unknown as CheckSummary
+        }
+      })
+
+      render(<ExportView
+        clips={mixedClips}
+        tags={['生态保护', '政策', '内部']}
+        exportClips={mockExportClips}
+        checkBeforeExport={mockCheckBeforeExport}
+        onNavigateToCheck={mockOnNavigateToCheck}
+        state={mockState}
+      />)
+
+      fireEvent.click(screen.getByTestId('export-status-pending'))
+
+      expect(screen.getByTestId('export-count-info')).toHaveTextContent(/将导出 3 个片段/)
+      expect(screen.getByTestId('export-submit-btn')).not.toBeDisabled()
+
+      fireEvent.click(screen.getByTestId('export-check-btn'))
+      expect(mockCheckBeforeExport).toHaveBeenCalledWith(expect.objectContaining({
+        includeStatus: expect.arrayContaining(['available', 'published', 'pending'])
+      }))
+      expect(screen.getByTestId('export-submit-btn')).toBeDisabled()
+    })
+
+    it('11.3 默认排除待核实时导出发布清单可用', async () => {
+      const mixedClips = createMixedStatusClips()
+
+      mockCheckBeforeExport.mockReturnValue({
+        allowed: true,
+        results: [],
+        summary: {
+          totalClips: 2,
+          errorCount: 0,
+          warningCount: 0,
+          infoCount: 0,
+          byType: {
+            sensitive_word: 0,
+            missing_reference: 0,
+            other: 0
+          },
+          clipsWithIssues: []
+        } as unknown as CheckSummary
+      })
+
+      mockExportClips.mockReturnValue({
+        success: true,
+        content: JSON.stringify({
+          meta: { version: '1.0.0', exportedAt: Date.now() },
+          fragments: { total: 2, byStatus: { available: 1, pending: 0, disabled: 0, published: 1 } }
+        }),
+        fileName: '混合状态测试_2024-01-15T10-00-00Z.json',
+        clipCount: 2,
+        excludedCount: { sensitive: 0, status: 2, tags: 0 }
+      } as unknown as ExportResult)
+
+      render(<ExportView
+        clips={mixedClips}
+        tags={['生态保护', '政策', '内部']}
+        exportClips={mockExportClips}
+        checkBeforeExport={mockCheckBeforeExport}
+        onNavigateToCheck={mockOnNavigateToCheck}
+        state={mockState}
+      />)
+
+      fireEvent.click(screen.getByTestId('export-format-manifest'))
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('export-submit-btn'))
+      })
+
+      await waitFor(() => {
+        expect(mockExportClips).toHaveBeenCalled()
+      })
+
+      expect(mockExportClips).toHaveBeenCalledWith(expect.objectContaining({
+        format: 'manifest',
+        includeStatus: ['available', 'published'],
+        excludeSensitive: true
+      }))
+
+      const exportResult = mockExportClips.mock.results[0].value
+      expect(exportResult.clipCount).toBe(2)
+      expect(exportResult.fileName).toContain('混合状态测试')
+    }, { timeout: 10000 })
+
+    it('11.4 checkBeforeExport 接收当前导出选项', () => {
+      const mixedClips = createMixedStatusClips()
+
+      mockCheckBeforeExport.mockReturnValue({
+        allowed: true,
+        results: [],
+        summary: {
+          totalClips: 2,
+          errorCount: 0,
+          warningCount: 0,
+          infoCount: 0,
+          byType: {
+            sensitive_word: 0,
+            missing_reference: 0,
+            other: 0
+          },
+          clipsWithIssues: []
+        } as unknown as CheckSummary
+      })
+
+      render(<ExportView
+        clips={mixedClips}
+        tags={['生态保护', '政策', '内部']}
+        exportClips={mockExportClips}
+        checkBeforeExport={mockCheckBeforeExport}
+        onNavigateToCheck={mockOnNavigateToCheck}
+        state={mockState}
+      />)
+
+      fireEvent.click(screen.getByTestId('export-status-disabled'))
+      fireEvent.click(screen.getByTestId('export-tag-生态保护'))
+
+      fireEvent.click(screen.getByTestId('export-check-btn'))
+
+      expect(mockCheckBeforeExport).toHaveBeenCalledWith(expect.objectContaining({
+        includeStatus: expect.arrayContaining(['available', 'published', 'disabled']),
+        includeTags: ['生态保护'],
+        excludeSensitive: true,
+        format: 'markdown'
+      }))
+    })
+  })
 })

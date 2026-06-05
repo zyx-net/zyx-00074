@@ -3,7 +3,8 @@ import * as Exporter from '../exporter'
 import * as Parser from '../parser'
 import * as State from '../state'
 import * as History from '../history'
-import type { WorkspaceState, MaterialConfig, ExportFormat, ClipStatus } from '../../core/types'
+import * as Checker from '../checker'
+import type { WorkspaceState, MaterialConfig, ExportFormat, ClipStatus, ExportOptions, Clip } from '../../core/types'
 
 const sampleTranscript = `【记者】: 张教授您好，非常感谢您接受我们的采访。首先想请您谈谈这次项目的背景和初衷。
 
@@ -774,5 +775,143 @@ describe('导入样例后导出验证', () => {
     expect(result.content).toContain('## 片段列表')
     expect(result.content).toContain('### 片段 1')
     expect(result.content).toContain('元数据')
+  })
+})
+
+describe('混合状态素材导出回归测试', () => {
+  let workspace: WorkspaceState
+
+  const createClip = (id: string, content: string, status: ClipStatus, tags: string[] = []): Clip => ({
+    id,
+    content,
+    status,
+    speaker: '测试',
+    tags,
+    notes: '',
+    references: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  })
+
+  beforeEach(() => {
+    workspace = {
+      clips: [
+        createClip('clip-1', '这是正常可用的片段内容[来源：采访记录]', 'available', ['生态保护']),
+        createClip('clip-2', '这是待核实的片段，需要进一步确认[来源：内部资料]', 'pending', ['政策']),
+        createClip('clip-3', '这是已发布的片段内容[来源：公开报道]', 'published', ['生态保护']),
+        createClip('clip-4', '这是被禁用的片段[来源：保密]', 'disabled', ['内部']),
+        createClip('clip-5', '另一个可用片段[来源：技术文档]', 'available', ['技术'])
+      ],
+      tags: ['生态保护', '政策', '内部', '技术'],
+      config: {
+        sensitiveWords: ['敏感话题', '损害', '矛盾'],
+        separator: '---',
+        speakerPattern: '【(.*?)】:'
+      }
+    }
+    History.clearOperationLog()
+  })
+
+  describe('checkBeforeExport 混合状态测试', () => {
+    it('1. 工作区存在待核实片段但默认排除时，预检应通过', () => {
+      expect(workspace.clips.filter(c => c.status === 'pending').length).toBeGreaterThan(0)
+      expect(workspace.clips.filter(c => c.status === 'disabled').length).toBeGreaterThan(0)
+
+      const defaultOptions: ExportOptions = {
+        format: 'manifest',
+        includeStatus: ['available', 'published'],
+        excludeSensitive: true,
+        materialTitle: '混合状态测试'
+      }
+
+      const result = Checker.checkBeforeExport(workspace, defaultOptions)
+      expect(result.allowed).toBe(true)
+      expect(result.summary.totalClips).toBe(3)
+    })
+
+    it('2. 主动选择包含待核实片段时，预检应拦截', () => {
+      const includePendingOptions: ExportOptions = {
+        format: 'manifest',
+        includeStatus: ['available', 'pending'],
+        excludeSensitive: true,
+        materialTitle: '包含待核实测试'
+      }
+
+      const result = Checker.checkBeforeExport(workspace, includePendingOptions)
+      expect(result.allowed).toBe(false)
+      const hasPendingError = result.results.some(r =>
+        r.type === 'other' && r.severity === 'error' && r.message.includes('待核实片段不能发布')
+      )
+      expect(hasPendingError).toBe(true)
+    })
+
+    it('3. 主动选择包含禁用片段时，预检应通过（禁用仅警告）', () => {
+      const includeDisabledOptions: ExportOptions = {
+        format: 'manifest',
+        includeStatus: ['available', 'disabled'],
+        excludeSensitive: true,
+        materialTitle: '包含禁用测试'
+      }
+
+      const result = Checker.checkBeforeExport(workspace, includeDisabledOptions)
+      expect(result.allowed).toBe(true)
+      expect(result.summary.totalClips).toBe(3)
+    })
+
+    it('4. 无导出选项时保持旧行为：拦截所有待核实片段', () => {
+      const result = Checker.checkBeforeExport(workspace)
+      expect(result.allowed).toBe(false)
+      const hasPendingError = result.results.some(r =>
+        r.type === 'other' && r.severity === 'error' && r.message.includes('待核实片段不能发布')
+      )
+      expect(hasPendingError).toBe(true)
+    })
+
+    it('5. 默认排除待核实时导出发布清单应成功', () => {
+      const options: ExportOptions = {
+        format: 'manifest',
+        includeStatus: ['available', 'published'],
+        excludeSensitive: true,
+        materialTitle: '混合状态导出测试'
+      }
+
+      const result = Exporter.exportClips(workspace, options)
+      expect(result.clipCount).toBe(3)
+      expect(result.fileName).toContain('混合状态导出测试')
+
+      const parsed = JSON.parse(result.content)
+      expect(parsed.fragments.total).toBe(3)
+      expect(parsed.fragments.byStatus.available).toBe(2)
+      expect(parsed.fragments.byStatus.published).toBe(1)
+      expect(parsed.fragments.byStatus.pending).toBe(0)
+      expect(parsed.fragments.byStatus.disabled).toBe(0)
+    })
+
+    it('6. checkExportConflicts 主动包含待核实应产生警告', () => {
+      const includePendingOptions: ExportOptions = {
+        format: 'manifest',
+        includeStatus: ['available', 'pending'],
+        excludeSensitive: true,
+        materialTitle: '冲突测试'
+      }
+
+      const conflicts = Exporter.checkExportConflicts(workspace, includePendingOptions)
+      const pendingConflict = conflicts.find(c => c.type === 'pending_included')
+      expect(pendingConflict).toBeDefined()
+      expect(pendingConflict!.message).toContain('待核实片段')
+    })
+
+    it('7. 默认排除待核实时 checkExportConflicts 不应产生待核实警告', () => {
+      const defaultOptions: ExportOptions = {
+        format: 'manifest',
+        includeStatus: ['available', 'published'],
+        excludeSensitive: true,
+        materialTitle: '无冲突测试'
+      }
+
+      const conflicts = Exporter.checkExportConflicts(workspace, defaultOptions)
+      const pendingConflict = conflicts.find(c => c.type === 'pending_included')
+      expect(pendingConflict).toBeUndefined()
+    })
   })
 })

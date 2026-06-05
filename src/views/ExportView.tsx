@@ -9,7 +9,7 @@ interface ExportViewProps {
   clips: any[]
   tags: string[]
   exportClips: (options: ExportOptions) => ExportResult
-  checkBeforeExport: () => { allowed: boolean; results: CheckResult[]; summary: CheckSummary }
+  checkBeforeExport: (options: ExportOptions) => { allowed: boolean; results: CheckResult[]; summary: CheckSummary }
   onNavigateToCheck: () => void
   state: any
 }
@@ -101,7 +101,7 @@ export const ExportView: React.FC<ExportViewProps> = ({
   }
 
   const handleCheck = () => {
-    const result = checkBeforeExport()
+    const result = checkBeforeExport(options)
     setCheckResult(result)
     setHasChecked(true)
   }
@@ -113,7 +113,7 @@ export const ExportView: React.FC<ExportViewProps> = ({
 
   const handleExport = async (skipConflictCheck: boolean = false) => {
     if (!hasChecked) {
-      const result = checkBeforeExport()
+      const result = checkBeforeExport(options)
       setCheckResult(result)
       setHasChecked(true)
       if (!result.allowed) {

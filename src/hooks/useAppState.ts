@@ -660,8 +660,8 @@ export const useAppState = () => {
     return { results, summary }
   }, [state.workspace])
 
-  const checkBeforeExport = useCallback((): { allowed: boolean; results: CheckResult[]; summary: Checker.CheckSummary } => {
-    return Checker.checkBeforeExport(state.workspace)
+  const checkBeforeExport = useCallback((options: ExportOptions): { allowed: boolean; results: CheckResult[]; summary: Checker.CheckSummary } => {
+    return Checker.checkBeforeExport(state.workspace, options)
   }, [state.workspace])
 
   const exportClips = useCallback((options: ExportOptions) => {
