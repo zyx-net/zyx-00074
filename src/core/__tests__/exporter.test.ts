@@ -913,5 +913,94 @@ describe('混合状态素材导出回归测试', () => {
       const pendingConflict = conflicts.find(c => c.type === 'pending_included')
       expect(pendingConflict).toBeUndefined()
     })
+
+    it('8. 标签筛选排除所有待核实片段时，checkExportConflicts 不应产生待核实警告', () => {
+      const options: ExportOptions = {
+        format: 'manifest',
+        includeStatus: ['available', 'pending', 'published'],
+        includeTags: ['生态保护'],
+        excludeSensitive: true,
+        materialTitle: '标签筛选测试'
+      }
+
+      const conflicts = Exporter.checkExportConflicts(workspace, options)
+      const pendingConflict = conflicts.find(c => c.type === 'pending_included')
+      expect(pendingConflict).toBeUndefined()
+
+      const { clips: filteredClips } = Exporter.filterClipsForExport(
+        workspace.clips,
+        options,
+        workspace.config.sensitiveWords || []
+      )
+      const pendingInExport = filteredClips.filter(c => c.status === 'pending')
+      expect(pendingInExport.length).toBe(0)
+    })
+
+    it('9. 标签筛选命中待核实片段时，checkExportConflicts 应产生警告', () => {
+      const options: ExportOptions = {
+        format: 'manifest',
+        includeStatus: ['available', 'pending', 'published'],
+        includeTags: ['政策'],
+        excludeSensitive: true,
+        materialTitle: '标签命中待核实测试'
+      }
+
+      const conflicts = Exporter.checkExportConflicts(workspace, options)
+      const pendingConflict = conflicts.find(c => c.type === 'pending_included')
+      expect(pendingConflict).toBeDefined()
+      expect(pendingConflict!.message).toContain('1 个待核实片段')
+
+      const { clips: filteredClips } = Exporter.filterClipsForExport(
+        workspace.clips,
+        options,
+        workspace.config.sensitiveWords || []
+      )
+      const pendingInExport = filteredClips.filter(c => c.status === 'pending')
+      expect(pendingInExport.length).toBe(1)
+    })
+
+    it('10. 敏感词排除关闭但标签筛选排除所有敏感片段时，不应产生敏感词警告', () => {
+      const sensitiveWorkspace = {
+        ...workspace,
+        clips: [
+          createClip('clip-1', '正常内容[来源：测试]', 'available', ['生态保护']),
+          createClip('clip-2', '包含损害敏感词[来源：测试]', 'available', ['政策']),
+        ]
+      }
+
+      const options: ExportOptions = {
+        format: 'manifest',
+        includeStatus: ['available'],
+        includeTags: ['生态保护'],
+        excludeSensitive: false,
+        materialTitle: '敏感词标签筛选测试'
+      }
+
+      const conflicts = Exporter.checkExportConflicts(sensitiveWorkspace, options)
+      const sensitiveConflict = conflicts.find(c => c.type === 'sensitive_mismatch')
+      expect(sensitiveConflict).toBeUndefined()
+    })
+
+    it('11. 导出结果与冲突检测一致：标签筛掉待核实时导出不含待核实', () => {
+      const options: ExportOptions = {
+        format: 'manifest',
+        includeStatus: ['available', 'pending', 'published'],
+        includeTags: ['生态保护'],
+        excludeSensitive: true,
+        materialTitle: '一致性测试'
+      }
+
+      const conflicts = Exporter.checkExportConflicts(workspace, options)
+      const pendingConflict = conflicts.find(c => c.type === 'pending_included')
+      expect(pendingConflict).toBeUndefined()
+
+      const result = Exporter.exportClips(workspace, options)
+      expect(result.clipCount).toBe(2)
+
+      const parsed = JSON.parse(result.content)
+      expect(parsed.fragments.byStatus.pending).toBe(0)
+      expect(parsed.fragments.byStatus.available).toBe(1)
+      expect(parsed.fragments.byStatus.published).toBe(1)
+    })
   })
 })

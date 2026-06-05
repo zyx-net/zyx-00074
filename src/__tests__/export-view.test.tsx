@@ -4,7 +4,7 @@ import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-libra
 import React from 'react'
 import { ExportView } from '../views/ExportView'
 import type { ExportOptions, Clip, ClipStatus } from '../core/types'
-import type { ExportResult } from '../core/exporter'
+import type { ExportResult, ExportConflict } from '../core/exporter'
 import * as Exporter from '../core/exporter'
 import * as History from '../core/history'
 import type { CheckSummary } from '../core/checker'
@@ -54,6 +54,7 @@ describe('ExportView 界面交互测试', () => {
   let mockExportAPI: MockExportAPI
   let mockExportClips: any
   let mockCheckBeforeExport: any
+  let mockCheckExportConflicts: any
   let mockOnNavigateToCheck: any
   let mockState: any
 
@@ -96,6 +97,10 @@ describe('ExportView 界面交互测试', () => {
       } as unknown as CheckSummary
     }))
 
+    mockCheckExportConflicts = vi.fn((state: any, options: ExportOptions): ExportConflict[] => {
+      return Exporter.checkExportConflicts(state, options)
+    })
+
     mockOnNavigateToCheck = vi.fn()
 
     mockState = {
@@ -125,6 +130,7 @@ describe('ExportView 界面交互测试', () => {
         tags={mockState.workspace.tags}
         exportClips={mockExportClips}
         checkBeforeExport={mockCheckBeforeExport}
+        checkExportConflicts={mockCheckExportConflicts}
         onNavigateToCheck={mockOnNavigateToCheck}
         state={mockState}
         {...props}
@@ -215,6 +221,7 @@ describe('ExportView 界面交互测试', () => {
 
     it('3.2 添加待核实状态触发冲突警告', () => {
       renderExportView()
+      fireEvent.click(screen.getByTestId('export-exclude-sensitive'))
       fireEvent.click(screen.getByTestId('export-status-pending'))
       expect(screen.getByTestId('export-conflict-alert')).toBeInTheDocument()
       expect(screen.getByText(/已选择包含.*待核实片段/)).toBeInTheDocument()
@@ -323,6 +330,7 @@ describe('ExportView 界面交互测试', () => {
 
     it('6.3 包含待核实时点击导出显示警告模态框', async () => {
       renderExportView()
+      fireEvent.click(screen.getByTestId('export-exclude-sensitive'))
       fireEvent.click(screen.getByTestId('export-status-pending'))
       
       await act(async () => {
@@ -338,6 +346,7 @@ describe('ExportView 界面交互测试', () => {
 
     it('6.4 警告模态框点击取消按钮关闭模态框', async () => {
       renderExportView()
+      fireEvent.click(screen.getByTestId('export-exclude-sensitive'))
       fireEvent.click(screen.getByTestId('export-status-pending'))
       
       await act(async () => {
@@ -358,6 +367,7 @@ describe('ExportView 界面交互测试', () => {
 
     it('6.5 警告模态框点击仍然导出继续执行导出', async () => {
       renderExportView()
+      fireEvent.click(screen.getByTestId('export-exclude-sensitive'))
       fireEvent.click(screen.getByTestId('export-status-pending'))
       
       await act(async () => {
@@ -381,11 +391,13 @@ describe('ExportView 界面交互测试', () => {
       renderExportView()
       expect(screen.queryByTestId('export-conflict-alert')).not.toBeInTheDocument()
       
+      fireEvent.click(screen.getByTestId('export-exclude-sensitive'))
       fireEvent.click(screen.getByTestId('export-status-pending'))
       expect(screen.getByTestId('export-conflict-alert')).toBeInTheDocument()
+      expect(screen.getByText(/待核实片段/)).toBeInTheDocument()
       
       fireEvent.click(screen.getByTestId('export-status-pending'))
-      expect(screen.queryByTestId('export-conflict-alert')).not.toBeInTheDocument()
+      expect(screen.queryByText(/待核实片段/)).not.toBeInTheDocument()
     })
   })
 
@@ -958,5 +970,145 @@ describe('ExportView 界面交互测试', () => {
         format: 'markdown'
       }))
     })
+
+    it('11.5 标签筛选排除待核实片段时，导出前不显示待核实冲突警告', async () => {
+      const mixedClips = createMixedStatusClips()
+
+      mockCheckExportConflicts.mockReturnValue([])
+
+      mockCheckBeforeExport.mockReturnValue({
+        allowed: true,
+        results: [],
+        summary: {
+          totalClips: 2,
+          errorCount: 0,
+          warningCount: 0,
+          infoCount: 0,
+          byType: {
+            sensitive_word: 0,
+            missing_reference: 0,
+            other: 0
+          },
+          clipsWithIssues: []
+        } as unknown as CheckSummary
+      })
+
+      mockExportClips.mockReturnValue({
+        success: true,
+        content: JSON.stringify({}),
+        fileName: '标签筛选测试_2024-01-15T10-00-00Z.json',
+        clipCount: 2,
+        excludedCount: { sensitive: 0, status: 0, tags: 2 }
+      } as unknown as ExportResult)
+
+      render(<ExportView
+        clips={mixedClips}
+        tags={['生态保护', '政策', '内部']}
+        exportClips={mockExportClips}
+        checkBeforeExport={mockCheckBeforeExport}
+        checkExportConflicts={mockCheckExportConflicts}
+        onNavigateToCheck={mockOnNavigateToCheck}
+        state={mockState}
+      />)
+
+      fireEvent.click(screen.getByTestId('export-status-pending'))
+      fireEvent.click(screen.getByTestId('export-tag-生态保护'))
+      fireEvent.click(screen.getByTestId('export-format-manifest'))
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('export-submit-btn'))
+      })
+
+      await waitFor(() => {
+        expect(mockCheckExportConflicts).toHaveBeenCalled()
+      })
+
+      const lastCall = mockCheckExportConflicts.mock.calls[mockCheckExportConflicts.mock.calls.length - 1]
+      expect(lastCall[1]).toEqual(expect.objectContaining({
+        includeStatus: expect.arrayContaining(['available', 'published', 'pending']),
+        includeTags: ['生态保护']
+      }))
+
+      const pendingConflicts = mockCheckExportConflicts.mock.results[mockCheckExportConflicts.mock.results.length - 1].value.filter(
+        (c: ExportConflict) => c.type === 'pending_included'
+      )
+      expect(pendingConflicts.length).toBe(0)
+
+      expect(mockExportClips).toHaveBeenCalled()
+      const exportResult = mockExportClips.mock.results[0].value
+      expect(exportResult.clipCount).toBe(2)
+      expect(exportResult.fileName).toContain('标签筛选测试')
+    }, { timeout: 10000 })
+
+    it('11.6 标签筛选命中待核实片段时，导出前显示待核实冲突警告', async () => {
+      const mixedClips = createMixedStatusClips()
+
+      mockCheckExportConflicts.mockReturnValue([{
+        type: 'pending_included',
+        message: '已选择包含 1 个待核实片段，这些片段不应被发布',
+        action: '建议取消勾选"待核实"状态'
+      }])
+
+      mockCheckBeforeExport.mockReturnValue({
+        allowed: true,
+        results: [],
+        summary: {
+          totalClips: 2,
+          errorCount: 0,
+          warningCount: 0,
+          infoCount: 0,
+          byType: {
+            sensitive_word: 0,
+            missing_reference: 0,
+            other: 0
+          },
+          clipsWithIssues: []
+        } as unknown as CheckSummary
+      })
+
+      mockExportClips.mockReturnValue({
+        success: true,
+        content: JSON.stringify({}),
+        fileName: '命中待核实测试_2024-01-15T10-00-00Z.json',
+        clipCount: 2,
+        excludedCount: { sensitive: 0, status: 0, tags: 1 }
+      } as unknown as ExportResult)
+
+      render(<ExportView
+        clips={mixedClips}
+        tags={['生态保护', '政策', '内部']}
+        exportClips={mockExportClips}
+        checkBeforeExport={mockCheckBeforeExport}
+        checkExportConflicts={mockCheckExportConflicts}
+        onNavigateToCheck={mockOnNavigateToCheck}
+        state={mockState}
+      />)
+
+      fireEvent.click(screen.getByTestId('export-status-pending'))
+      fireEvent.click(screen.getByTestId('export-tag-政策'))
+      fireEvent.click(screen.getByTestId('export-format-manifest'))
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('export-submit-btn'))
+      })
+
+      await waitFor(() => {
+        expect(mockCheckExportConflicts).toHaveBeenCalled()
+      })
+
+      const lastCall = mockCheckExportConflicts.mock.calls[mockCheckExportConflicts.mock.calls.length - 1]
+      expect(lastCall[1]).toEqual(expect.objectContaining({
+        includeStatus: expect.arrayContaining(['available', 'published', 'pending']),
+        includeTags: ['政策']
+      }))
+
+      const pendingConflicts = mockCheckExportConflicts.mock.results[mockCheckExportConflicts.mock.results.length - 1].value.filter(
+        (c: ExportConflict) => c.type === 'pending_included'
+      )
+      expect(pendingConflicts.length).toBe(1)
+      expect(pendingConflicts[0].message).toContain('1 个待核实片段')
+
+      expect(screen.getByTestId('export-conflict-modal')).toBeInTheDocument()
+    }, { timeout: 10000 })
   })
 })

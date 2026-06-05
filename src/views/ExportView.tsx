@@ -10,6 +10,7 @@ interface ExportViewProps {
   tags: string[]
   exportClips: (options: ExportOptions) => ExportResult
   checkBeforeExport: (options: ExportOptions) => { allowed: boolean; results: CheckResult[]; summary: CheckSummary }
+  checkExportConflicts?: (state: any, options: ExportOptions) => ExportConflict[]
   onNavigateToCheck: () => void
   state: any
 }
@@ -32,9 +33,11 @@ export const ExportView: React.FC<ExportViewProps> = ({
   tags,
   exportClips,
   checkBeforeExport,
+  checkExportConflicts: checkExportConflictsProp,
   onNavigateToCheck,
   state
 }) => {
+  const checkExportConflictsFn = checkExportConflictsProp ?? checkExportConflicts
   const [format, setFormat] = useState<ExportFormat>('markdown')
   const [includeStatus, setIncludeStatus] = useState<ClipStatus[]>(['available', 'published'])
   const [includeTags, setIncludeTags] = useState<string[]>([])
@@ -75,7 +78,7 @@ export const ExportView: React.FC<ExportViewProps> = ({
 
   useEffect(() => {
     if (state?.workspace) {
-      const detectedConflicts = checkExportConflicts(state.workspace, options)
+      const detectedConflicts = checkExportConflictsFn(state.workspace, options)
       setConflicts(detectedConflicts)
     }
   }, [options, state])
@@ -124,7 +127,7 @@ export const ExportView: React.FC<ExportViewProps> = ({
     }
 
     if (!skipConflictCheck) {
-      const detectedConflicts = checkExportConflicts(state.workspace, options)
+      const detectedConflicts = checkExportConflictsFn(state.workspace, options)
       const hasBlockingConflicts = detectedConflicts.some(
         c => c.type === 'empty_result'
       )

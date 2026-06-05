@@ -15,7 +15,7 @@ const hasSensitiveWords = (clip: Clip, sensitiveWords: string[]): boolean => {
   })
 }
 
-const filterClipsForExport = (
+export const filterClipsForExport = (
   clips: Clip[],
   options: ExportOptions,
   configSensitiveWords: string[] = []
@@ -429,7 +429,7 @@ export const checkExportConflicts = (
   }
 
   if (options.includeStatus?.includes('pending')) {
-    const pendingCount = state.clips.filter(c => c.status === 'pending').length
+    const pendingCount = filteredClips.filter(c => c.status === 'pending').length
     if (pendingCount > 0) {
       conflicts.push({
         type: 'pending_included',
@@ -440,7 +440,7 @@ export const checkExportConflicts = (
   }
 
   if (options.includeStatus?.includes('disabled')) {
-    const disabledCount = state.clips.filter(c => c.status === 'disabled').length
+    const disabledCount = filteredClips.filter(c => c.status === 'disabled').length
     if (disabledCount > 0) {
       conflicts.push({
         type: 'disabled_included',
@@ -451,7 +451,7 @@ export const checkExportConflicts = (
   }
 
   if (!options.excludeSensitive && sensitiveWords.length > 0) {
-    const sensitiveClips = state.clips.filter(c => hasSensitiveWords(c, sensitiveWords))
+    const sensitiveClips = filteredClips.filter(c => hasSensitiveWords(c, sensitiveWords))
     if (sensitiveClips.length > 0) {
       conflicts.push({
         type: 'sensitive_mismatch',
