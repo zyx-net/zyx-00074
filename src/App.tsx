@@ -171,7 +171,7 @@ const App: React.FC = () => {
                 </span>
               )}
               {hasUnsavedChanges && (
-                <span style={{ marginLeft: '12px', color: '#ff9800', fontWeight: 500 }}>
+                <span style={{ marginLeft: '12px', color: '#ff9800', fontWeight: 500 }} data-testid="unsaved-changes-indicator">
                   • ⚠ 有未保存改动
                 </span>
               )}
@@ -326,6 +326,7 @@ const App: React.FC = () => {
         onClose={() => {}}
         title="未保存的改动"
         footer={null}
+        data-testid="unsaved-changes-modal"
       >
         {state.unsavedChangesPrompt && (
           <div>
@@ -346,6 +347,7 @@ const App: React.FC = () => {
                 className="btn btn-primary"
                 onClick={() => actions.resolveUnsavedChanges('keep')}
                 style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+                data-testid="unsaved-changes-keep-btn"
               >
                 <div>
                   <strong>🔒 保留当前</strong>
@@ -359,6 +361,7 @@ const App: React.FC = () => {
                 className="btn btn-secondary"
                 onClick={() => actions.resolveUnsavedChanges('overwrite')}
                 style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+                data-testid="unsaved-changes-overwrite-btn"
               >
                 <div>
                   <strong>⚠ 丢弃当前并加载</strong>
@@ -372,6 +375,7 @@ const App: React.FC = () => {
                 className="btn btn-secondary"
                 onClick={() => actions.resolveUnsavedChanges('saveas')}
                 style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+                data-testid="unsaved-changes-saveas-btn"
               >
                 <div>
                   <strong>💾 先另存当前工作区</strong>

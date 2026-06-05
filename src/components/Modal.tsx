@@ -6,14 +6,15 @@ interface ModalProps {
   title: string
   children: React.ReactNode
   footer?: React.ReactNode
+  'data-testid'?: string
 }
 
-export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, footer }) => {
+export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, footer, 'data-testid': dataTestId }) => {
   if (!isOpen) return null
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
+    <div className="modal-overlay" onClick={onClose} data-testid={dataTestId ? `${dataTestId}-overlay` : undefined}>
+      <div className="modal" onClick={e => e.stopPropagation()} data-testid={dataTestId}>
         <div className="modal-header">
           <h3 className="modal-title">{title}</h3>
           <button className="btn btn-sm btn-secondary" onClick={onClose}>
