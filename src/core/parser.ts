@@ -64,6 +64,19 @@ const escapeRegExp = (string: string): string => {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+const deduplicateTagsCaseInsensitive = (tags: string[]): string[] => {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const tag of tags) {
+    const lower = tag.toLowerCase()
+    if (!seen.has(lower)) {
+      seen.add(lower)
+      result.push(tag)
+    }
+  }
+  return result
+}
+
 export interface ParseResult {
   clips: Clip[]
   tags: string[]
@@ -76,11 +89,17 @@ export const parseTranscript = (
   existingTags: string[] = []
 ): ParseResult => {
   const warnings: string[] = []
+  const rawDefaultTags = config.defaultTags ?? DEFAULT_CONFIG.defaultTags
+  const dedupedDefaultTags = deduplicateTagsCaseInsensitive(rawDefaultTags)
+  if (dedupedDefaultTags.length < rawDefaultTags.length) {
+    warnings.push(`默认标签存在大小写重复，已自动去重：${rawDefaultTags.length - dedupedDefaultTags.length} 个重复项`)
+  }
+
   const mergedConfig: Required<MaterialConfig> = {
     separator: config.separator ?? DEFAULT_CONFIG.separator,
     speakerPattern: config.speakerPattern ?? DEFAULT_CONFIG.speakerPattern,
     timestampPattern: config.timestampPattern ?? DEFAULT_CONFIG.timestampPattern,
-    defaultTags: config.defaultTags ?? DEFAULT_CONFIG.defaultTags,
+    defaultTags: dedupedDefaultTags,
     sensitiveWords: config.sensitiveWords ?? DEFAULT_CONFIG.sensitiveWords,
     requiredReferencePatterns: config.requiredReferencePatterns ?? DEFAULT_CONFIG.requiredReferencePatterns
   }

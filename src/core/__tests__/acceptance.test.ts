@@ -486,3 +486,141 @@ describe('导出预检测试', () => {
     expect(hasPendingError).toBe(true)
   })
 })
+
+describe('Electron 启动与依赖测试', () => {
+  it('1. Electron 二进制和 path.txt 存在', () => {
+    const fs = require('fs')
+    const path = require('path')
+    
+    const electronPkgPath = path.resolve(process.cwd(), 'node_modules/electron')
+    const pathTxtPath = path.join(electronPkgPath, 'path.txt')
+    const distPath = path.join(electronPkgPath, 'dist')
+    
+    expect(fs.existsSync(pathTxtPath)).toBe(true)
+    
+    const executableName = fs.readFileSync(pathTxtPath, 'utf-8').trim()
+    expect(executableName.length).toBeGreaterThan(0)
+    
+    const exePath = path.join(distPath, executableName)
+    expect(fs.existsSync(exePath)).toBe(true)
+  })
+
+  it('2. vite-plugin-electron 配置正确，onstart 有错误处理', () => {
+    const fs = require('fs')
+    const path = require('path')
+    
+    const viteConfigPath = path.resolve(process.cwd(), 'vite.config.ts')
+    expect(fs.existsSync(viteConfigPath)).toBe(true)
+    
+    const configContent = fs.readFileSync(viteConfigPath, 'utf-8')
+    expect(configContent).toContain('vite-plugin-electron')
+    expect(configContent).toContain('onstart')
+    expect(configContent).toContain('try')
+    expect(configContent).toContain('catch')
+    expect(configContent).toContain('startup()')
+  })
+
+  it('3. package.json 包含正确的 dev 和 build 脚本', () => {
+    const fs = require('fs')
+    const path = require('path')
+    
+    const pkgPath = path.resolve(process.cwd(), 'package.json')
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
+    
+    expect(pkg.scripts.dev).toBe('vite')
+    expect(pkg.scripts.build).toContain('vite build')
+    expect(pkg.scripts.build).toContain('electron-builder')
+    expect(pkg.main).toBe('dist-electron/main.js')
+    
+    expect(pkg.devDependencies.electron).toBeDefined()
+    expect(pkg.devDependencies['vite-plugin-electron']).toBeDefined()
+  })
+})
+
+describe('默认标签大小写不敏感去重测试', () => {
+  it('1. 导入配置中 News 和 news 同时存在时自动去重', () => {
+    const config: MaterialConfig = {
+      separator: '---',
+      defaultTags: ['News', 'news', 'Interview', 'interview', 'NEWS']
+    }
+    
+    const transcript = '片段1内容---片段2内容'
+    const result = Parser.parseTranscript(transcript, config)
+    
+    expect(result.warnings.some(w => w.includes('大小写重复'))).toBe(true)
+    
+    expect(result.tags.length).toBe(2)
+    expect(result.tags).toContain('News')
+    expect(result.tags).toContain('Interview')
+    expect(result.tags).not.toContain('news')
+    expect(result.tags).not.toContain('interview')
+    expect(result.tags).not.toContain('NEWS')
+  })
+
+  it('2. 片段标签不包含重复项（大小写不敏感）', () => {
+    const config: MaterialConfig = {
+      separator: '---',
+      defaultTags: ['News', 'news', 'News']
+    }
+    
+    const transcript = '测试内容'
+    const result = Parser.parseTranscript(transcript, config)
+    
+    expect(result.clips.length).toBe(1)
+    const clip = result.clips[0]
+    
+    expect(clip.tags.length).toBe(1)
+    expect(clip.tags[0]).toBe('News')
+    
+    const lowercaseCount = clip.tags.filter(t => t.toLowerCase() === 'news').length
+    expect(lowercaseCount).toBe(1)
+  })
+
+  it('3. 与现有标签合并时也遵循大小写不敏感规则', () => {
+    const existingTags = ['news', 'Interview']
+    const config: MaterialConfig = {
+      separator: '---',
+      defaultTags: ['News', 'interview', 'NewTag']
+    }
+    
+    const transcript = '测试内容'
+    const result = Parser.parseTranscript(transcript, config, existingTags)
+    
+    expect(result.tags.length).toBe(3)
+    expect(result.tags).toContain('news')
+    expect(result.tags).toContain('Interview')
+    expect(result.tags).toContain('NewTag')
+    
+    const clip = result.clips[0]
+    expect(clip.tags.length).toBe(3)
+    
+    const newsVariants = clip.tags.filter(t => t.toLowerCase() === 'news')
+    expect(newsVariants.length).toBe(1)
+    
+    const interviewVariants = clip.tags.filter(t => t.toLowerCase() === 'interview')
+    expect(interviewVariants.length).toBe(1)
+  })
+
+  it('4. 标签筛选时不出现重复选项（大小写不敏感）', () => {
+    const config: MaterialConfig = {
+      separator: '---',
+      defaultTags: ['News', 'news', 'Interview', 'interview']
+    }
+    
+    const transcript = '片段1---片段2---片段3'
+    const result = Parser.parseTranscript(transcript, config)
+    
+    const allTagsFromClips = result.clips.flatMap(c => c.tags)
+    const uniqueTagNames = new Set(allTagsFromClips.map(t => t.toLowerCase()))
+    
+    expect(uniqueTagNames.size).toBe(2)
+    expect(uniqueTagNames.has('news')).toBe(true)
+    expect(uniqueTagNames.has('interview')).toBe(true)
+    
+    const filterOptions = [...new Set(result.tags)]
+    const lowercaseOptions = filterOptions.map(t => t.toLowerCase())
+    const uniqueLowercase = [...new Set(lowercaseOptions)]
+    
+    expect(filterOptions.length).toBe(uniqueLowercase.length)
+  })
+})
